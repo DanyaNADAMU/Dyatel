@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 Dyatel Mock Server for Port & NAT Traversal Verification
-Listens on TCP port {{ dyatel_game_port }} across dual-stack.
+Listens on TCP port {{ dyatel_node_game_port }} across dual-stack.
 Responds with an identifiable string for automated testing.
 """
 import socket
 import select
 import sys
 
-PORT = {{ dyatel_game_port }}
+PORT = {{ dyatel_node_game_port }}
 
 def main():
     servers = []

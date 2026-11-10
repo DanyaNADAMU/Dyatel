@@ -50,9 +50,69 @@
       register: dyatel_pubkey_cmd
       changed_when: false
 
-    - name: Register node public key fact
+    - name: Register node WireGuard public key fact
       ansible.builtin.set_fact:
         discovered_dyatel_public_key: "{{ dyatel_pubkey_cmd.stdout | trim }}"
+
+    - name: Handle AmneziaWG key exchange if enabled
+      when: (dyatel_gateway_enable_amneziawg | default(false) | bool) or (dyatel_node_enable_amneziawg | default(false) | bool)
+      block:
+        - name: Ensure AmneziaWG directory exists
+          ansible.builtin.file:
+            path: /etc/amnezia/amneziawg
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Deploy AWG tools
+          ansible.builtin.copy:
+            src: "/Projects/Dyatel/ansible/roles/dyatel_gateway/files/{{ item }}"
+            dest: "/usr/local/bin/{{ item }}"
+            owner: root
+            group: root
+            mode: "0755"
+          loop:
+            - amneziawg-go
+            - awg
+            - awg-quick
+
+        - name: Check AWG key
+          ansible.builtin.stat:
+            path: /etc/amnezia/amneziawg/awg-dyatel.key
+          register: dyatel_awg_key_stat
+
+        - name: Generate AWG key
+          ansible.builtin.command:
+            cmd: /usr/local/bin/awg genkey
+          register: dyatel_awg_privkey_gen
+          when: not dyatel_awg_key_stat.stat.exists
+          changed_when: true
+
+        - name: Save AWG key
+          ansible.builtin.copy:
+            content: "{{ dyatel_awg_privkey_gen.stdout }}\n"
+            dest: /etc/amnezia/amneziawg/awg-dyatel.key
+            owner: root
+            group: root
+            mode: "0600"
+          when: not dyatel_awg_key_stat.stat.exists
+
+        - name: Read AWG key
+          ansible.builtin.slurp:
+            path: /etc/amnezia/amneziawg/awg-dyatel.key
+          register: dyatel_awg_privkey_slurp
+
+        - name: Derive AWG public key
+          ansible.builtin.command:
+            cmd: /usr/local/bin/awg pubkey
+            stdin: "{{ dyatel_awg_privkey_slurp.content | b64decode | trim }}"
+          register: dyatel_awg_pubkey_cmd
+          changed_when: false
+
+        - name: Register node AWG public key fact
+          ansible.builtin.set_fact:
+            discovered_dyatel_awg_public_key: "{{ dyatel_awg_pubkey_cmd.stdout | trim }}"
 
 - name: Phase 2 - Deploy Ingress Gateway
   hosts: gateway
@@ -61,6 +121,7 @@
     - role: dyatel_gateway
       vars:
         dyatel_gateway_wg_client_public_key: "{{ hostvars[groups['node'][0]]['discovered_dyatel_public_key'] }}"
+        dyatel_gateway_awg_client_public_key: "{{ hostvars[groups['node'][0]]['discovered_dyatel_awg_public_key'] | default('') }}"
 
 - name: Phase 3 - Deploy Client Node
   hosts: node
@@ -69,3 +130,36 @@
     - role: dyatel_node
       vars:
         dyatel_node_wg_gateway_public_key: "{{ hostvars[groups['gateway'][0]]['discovered_dyatel_public_key'] }}"
+        dyatel_node_awg_gateway_public_key: "{{ hostvars[groups['gateway'][0]]['discovered_dyatel_awg_public_key'] | default('') }}"
+
+- name: Phase 4 - Verify End-to-End Game Proxy Connectivity
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Wait for Game proxy port to respond on gateway host
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[groups['gateway'][0]]['ansible_host'] }}"
+        port: "{{ hostvars[groups['gateway'][0]]['dyatel_gateway_game_port'] | default(25565) }}"
+        timeout: 15
+        state: started
+
+    - name: Probe game proxy connection through socket
+      ansible.builtin.shell:
+        cmd: |
+          python3 -c "
+          import socket
+          s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+          s.settimeout(5)
+          s.connect(('{{ hostvars[groups['gateway'][0]]['ansible_host'] }}', {{ hostvars[groups['gateway'][0]]['dyatel_gateway_game_port'] | default(25565) }}))
+          s.sendall(b'PING\n')
+          resp = s.recv(1024)
+          s.close()
+          assert b'PONG_DYATEL_VERIFIED' in resp, f'Unexpected response: {resp}'
+          print('SUCCESS:', resp.decode().strip())
+          "
+      register: dyatel_probe_res
+      changed_when: false
+
+    - name: Display Dyatel deployment verification
+      ansible.builtin.debug:
+        msg: "Dyatel game proxy verified successfully! Server output: {{ dyatel_probe_res.stdout }}"
