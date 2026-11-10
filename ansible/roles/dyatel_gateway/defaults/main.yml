@@ -1,0 +1,55 @@
+---
+# ==============================================================================
+# Role Defaults: Dyatel Gateway (dyatel_gateway)
+# ==============================================================================
+
+dyatel_gateway_state: "present"
+
+# Modularity & Pluggability Feature Flags
+dyatel_gateway_enable_wireguard: true
+dyatel_gateway_enable_amneziawg: false
+dyatel_gateway_enable_xray: false
+
+# Game Traffic Forwarding Target
+dyatel_gateway_game_port: 25565
+dyatel_gateway_game_protocol: "tcp"
+
+# WireGuard (Standard High-Speed Transport)
+dyatel_gateway_wg_interface: "wg-dyatel"
+dyatel_gateway_wg_port: 51820
+dyatel_gateway_wg_address_ipv4: "10.13.36.1/24"
+dyatel_gateway_wg_address_ipv6: "fd00:36::1/64"
+dyatel_gateway_wg_client_ip_ipv4: "10.13.36.2"
+dyatel_gateway_wg_client_ip_ipv6: "fd00:36::2"
+dyatel_gateway_wg_client_public_key: ""
+dyatel_gateway_wg_client_allowed_ips: "10.13.36.2/32, fd00:36::2/128"
+
+# AmneziaWG (Obfuscated Transport for DPI Evasion)
+dyatel_gateway_awg_interface: "awg-dyatel"
+dyatel_gateway_awg_port: 51821
+dyatel_gateway_awg_address_ipv4: "10.13.37.1/24"
+dyatel_gateway_awg_address_ipv6: "fd00:37::1/64"
+dyatel_gateway_awg_client_ip_ipv4: "10.13.37.2"
+dyatel_gateway_awg_client_ip_ipv6: "fd00:37::2"
+dyatel_gateway_awg_client_public_key: ""
+dyatel_gateway_awg_client_allowed_ips: "10.13.37.2/32, fd00:37::2/128"
+dyatel_gateway_awg_jc: 4
+dyatel_gateway_awg_jmin: 40
+dyatel_gateway_awg_jmax: 70
+dyatel_gateway_awg_s1: 15
+dyatel_gateway_awg_s2: 25
+dyatel_gateway_awg_h1: 1234567890
+dyatel_gateway_awg_h2: 1987654321
+dyatel_gateway_awg_h3: 1357924680
+dyatel_gateway_awg_h4: 2468013579
+
+# Xray Reverse Tunneling (Emergency HTTPS Real TLS Transport)
+dyatel_gateway_xray_internal_port: 7995
+dyatel_gateway_xray_service_name: "actions.RunnerService"
+dyatel_gateway_xray_client_uuid: "00000000-0000-0000-0000-000000000000"
+
+# Firewall Isolation Settings (Prevent client access to private networks)
+dyatel_gateway_isolated_subnets:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"

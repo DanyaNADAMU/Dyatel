@@ -1,0 +1,51 @@
+---
+# ==============================================================================
+# Role Defaults: Dyatel Client Node (dyatel_node)
+# ==============================================================================
+
+dyatel_node_state: "present"
+
+# Modularity & Pluggability Feature Flags
+dyatel_node_enable_wireguard: true
+dyatel_node_enable_amneziawg: false
+dyatel_node_enable_xray: false
+
+# Game Server Local Target
+dyatel_node_game_port: 25565
+dyatel_node_game_backend_ip: "127.0.0.1"
+
+# WireGuard (Standard High-Speed Transport)
+dyatel_node_wg_interface: "wg-dyatel"
+dyatel_node_wg_address_ipv4: "10.13.36.2/24"
+dyatel_node_wg_address_ipv6: "fd00:36::2/64"
+dyatel_node_wg_gateway_endpoint: "192.0.2.1:51820"
+dyatel_node_wg_gateway_public_key: ""
+dyatel_node_wg_allowed_ips: "10.13.36.0/24, fd00:36::/64"
+dyatel_node_wg_persistent_keepalive: 25
+
+# AmneziaWG (Obfuscated Transport for DPI Evasion)
+dyatel_node_awg_interface: "awg-dyatel"
+dyatel_node_awg_address_ipv4: "10.13.37.2/24"
+dyatel_node_awg_address_ipv6: "fd00:37::2/64"
+dyatel_node_awg_gateway_endpoint: "192.0.2.1:51821"
+dyatel_node_awg_gateway_public_key: ""
+dyatel_node_awg_allowed_ips: "10.13.37.0/24, fd00:37::/64"
+dyatel_node_awg_persistent_keepalive: 25
+dyatel_node_awg_jc: 4
+dyatel_node_awg_jmin: 40
+dyatel_node_awg_jmax: 70
+dyatel_node_awg_s1: 15
+dyatel_node_awg_s2: 25
+dyatel_node_awg_h1: 1234567890
+dyatel_node_awg_h2: 1987654321
+dyatel_node_awg_h3: 1357924680
+dyatel_node_awg_h4: 2468013579
+
+# Xray Reverse Tunneling (Emergency HTTPS Real TLS Transport)
+dyatel_node_xray_server_domain: "example.com"
+dyatel_node_xray_server_port: 443
+dyatel_node_xray_service_name: "actions.RunnerService"
+dyatel_node_xray_client_uuid: "00000000-0000-0000-0000-000000000000"
+
+# Mock Server Testing Capability
+dyatel_node_mock_server_enabled: false

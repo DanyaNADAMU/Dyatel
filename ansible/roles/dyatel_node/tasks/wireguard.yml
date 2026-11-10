@@ -1,0 +1,72 @@
+---
+# ==============================================================================
+# Tasks: Dyatel WireGuard Node Transport Module
+# ==============================================================================
+
+- name: Install WireGuard system dependencies
+  ansible.builtin.apt:
+    name:
+      - wireguard
+      - wireguard-tools
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Check if WireGuard node private key exists
+  ansible.builtin.stat:
+    path: "/etc/wireguard/{{ dyatel_node_wg_interface }}.key"
+  register: dyatel_node_wg_key_stat
+
+- name: Generate WireGuard node private key if missing
+  ansible.builtin.command:
+    cmd: wg genkey
+  register: dyatel_node_wg_privkey_gen
+  when: not dyatel_node_wg_key_stat.stat.exists
+  changed_when: true
+
+- name: Save WireGuard node private key
+  ansible.builtin.copy:
+    content: "{{ dyatel_node_wg_privkey_gen.stdout }}\n"
+    dest: "/etc/wireguard/{{ dyatel_node_wg_interface }}.key"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not dyatel_node_wg_key_stat.stat.exists
+
+- name: Read WireGuard node private key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/{{ dyatel_node_wg_interface }}.key"
+  register: dyatel_node_wg_privkey_slurp
+
+- name: Set WireGuard node private key fact
+  ansible.builtin.set_fact:
+    dyatel_node_wg_private_key: "{{ dyatel_node_wg_privkey_slurp.content | b64decode | trim }}"
+
+- name: Derive WireGuard node public key
+  ansible.builtin.command:
+    cmd: wg pubkey
+    stdin: "{{ dyatel_node_wg_private_key }}"
+  register: dyatel_node_wg_pubkey_cmd
+  changed_when: false
+
+- name: Set WireGuard node public key fact
+  ansible.builtin.set_fact:
+    dyatel_node_wg_public_key: "{{ dyatel_node_wg_pubkey_cmd.stdout | trim }}"
+
+- name: Deploy WireGuard client node interface configuration
+  ansible.builtin.template:
+    src: wg-node.conf.j2
+    dest: "/etc/wireguard/{{ dyatel_node_wg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart wireguard node
+
+- name: Flush handlers before service verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure WireGuard client node service is enabled and started
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ dyatel_node_wg_interface }}"
+    state: started
+    enabled: true

@@ -1,0 +1,31 @@
+---
+# ==============================================================================
+# Tasks: Dyatel Client Node Teardown Module
+# ==============================================================================
+
+- name: Stop and disable Dyatel client node services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - "wg-quick@{{ dyatel_node_wg_interface }}"
+    - "awg-quick@{{ dyatel_node_awg_interface }}"
+    - dyatel-mock.service
+  failed_when: false
+
+- name: Remove client configuration and key files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/wireguard/{{ dyatel_node_wg_interface }}.conf"
+    - "/etc/wireguard/{{ dyatel_node_wg_interface }}.key"
+    - "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.conf"
+    - "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
+    - /usr/local/bin/dyatel-mock.py
+    - /etc/systemd/system/dyatel-mock.service
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true

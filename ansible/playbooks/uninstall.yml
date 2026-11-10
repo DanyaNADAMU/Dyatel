@@ -1,0 +1,19 @@
+---
+# ==============================================================================
+# Playbook: Teardown Dyatel Gateway & Client Node
+# ==============================================================================
+- name: Teardown Dyatel Client Node
+  hosts: node
+  become: true
+  roles:
+    - role: dyatel_node
+      vars:
+        dyatel_node_state: "absent"
+
+- name: Teardown Dyatel Ingress Gateway
+  hosts: gateway
+  become: true
+  roles:
+    - role: dyatel_gateway
+      vars:
+        dyatel_gateway_state: "absent"

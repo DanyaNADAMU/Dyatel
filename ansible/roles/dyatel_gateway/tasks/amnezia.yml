@@ -1,0 +1,133 @@
+---
+# ==============================================================================
+# Tasks: Dyatel AmneziaWG Gateway Transport Module
+# ==============================================================================
+
+- name: Deploy AmneziaWG userspace binaries
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - amneziawg-go
+    - awg
+    - awg-quick
+
+- name: Deploy awg-quick systemd service template
+  ansible.builtin.template:
+    src: awg-quick.service.j2
+    dest: /etc/systemd/system/awg-quick@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart awg gateway
+
+- name: Ensure AmneziaWG configuration directory exists
+  ansible.builtin.file:
+    path: /etc/amnezia/amneziawg
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Check if AmneziaWG gateway private key exists
+  ansible.builtin.stat:
+    path: "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.key"
+  register: dyatel_gateway_awg_key_stat
+
+- name: Generate AmneziaWG gateway private key if missing
+  ansible.builtin.command:
+    cmd: /usr/local/bin/awg genkey
+  register: dyatel_gateway_awg_privkey_gen
+  when: not dyatel_gateway_awg_key_stat.stat.exists
+  changed_when: true
+
+- name: Save AmneziaWG gateway private key
+  ansible.builtin.copy:
+    content: "{{ dyatel_gateway_awg_privkey_gen.stdout }}\n"
+    dest: "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.key"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not dyatel_gateway_awg_key_stat.stat.exists
+
+- name: Read AmneziaWG gateway private key
+  ansible.builtin.slurp:
+    path: "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.key"
+  register: dyatel_gateway_awg_privkey_slurp
+
+- name: Set AmneziaWG gateway private key fact
+  ansible.builtin.set_fact:
+    dyatel_gateway_awg_private_key: "{{ dyatel_gateway_awg_privkey_slurp.content | b64decode | trim }}"
+
+- name: Derive AmneziaWG gateway public key
+  ansible.builtin.command:
+    cmd: /usr/local/bin/awg pubkey
+    stdin: "{{ dyatel_gateway_awg_private_key }}"
+  register: dyatel_gateway_awg_pubkey_cmd
+  changed_when: false
+
+- name: Set AmneziaWG gateway public key fact
+  ansible.builtin.set_fact:
+    dyatel_gateway_awg_public_key: "{{ dyatel_gateway_awg_pubkey_cmd.stdout | trim }}"
+
+- name: Deploy AmneziaWG gateway interface configuration
+  ansible.builtin.template:
+    src: awg-gateway.conf.j2
+    dest: "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart awg gateway
+
+- name: Allow AmneziaWG UDP listener port in UFW
+  community.general.ufw:
+    rule: allow
+    to_port: "{{ dyatel_gateway_awg_port | string }}"
+    proto: udp
+    comment: "Dyatel AmneziaWG Transport"
+  notify: Reload ufw
+
+- name: Allow routed TCP traffic to AmneziaWG client node in UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ dyatel_gateway_awg_client_ip_ipv4 }}"
+    to_port: "{{ dyatel_gateway_game_port | string }}"
+    proto: "{{ dyatel_gateway_game_protocol }}"
+    comment: "Dyatel forward to AWG client node"
+  notify: Reload ufw
+
+- name: Allow routed IPv6 TCP traffic to AmneziaWG client node in UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ dyatel_gateway_awg_client_ip_ipv6 }}"
+    to_port: "{{ dyatel_gateway_game_port | string }}"
+    proto: "{{ dyatel_gateway_game_protocol }}"
+    comment: "Dyatel forward IPv6 to AWG client node"
+  notify: Reload ufw
+
+- name: Insert AmneziaWG isolation rules into /etc/ufw/before.rules
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    insertafter: "^:ufw-not-local"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: DYATEL AWG ISOLATION"
+    block: |
+      -A ufw-before-input -i {{ dyatel_gateway_awg_interface }} -p tcp -m multiport --dports 22,80,443,4001,4021,4055,4066 -j DROP
+      {% for subnet in dyatel_gateway_isolated_subnets %}
+      -A ufw-before-forward -i {{ dyatel_gateway_awg_interface }} -d {{ subnet }} -j DROP
+      {% endfor %}
+  notify: Reload ufw
+
+- name: Flush handlers before service activation
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure AmneziaWG gateway service is enabled and started
+  ansible.builtin.systemd:
+    name: "awg-quick@{{ dyatel_gateway_awg_interface }}"
+    state: started
+    enabled: true
+    daemon_reload: true

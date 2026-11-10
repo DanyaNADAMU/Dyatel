@@ -1,0 +1,9 @@
+---
+galaxy_info:
+  author: Dyatel Contributors
+  description: High-performance NAT traversal and game proxy gateway
+  license: MIT
+  min_ansible_version: "2.14"
+
+collections:
+  - community.general

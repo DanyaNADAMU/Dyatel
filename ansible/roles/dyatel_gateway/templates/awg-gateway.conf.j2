@@ -1,0 +1,21 @@
+# Managed by Dyatel - do not edit directly
+[Interface]
+Address = {{ dyatel_gateway_awg_address_ipv4 }}, {{ dyatel_gateway_awg_address_ipv6 }}
+ListenPort = {{ dyatel_gateway_awg_port }}
+PrivateKey = {{ dyatel_gateway_awg_private_key }}
+
+Jc = {{ dyatel_gateway_awg_jc }}
+Jmin = {{ dyatel_gateway_awg_jmin }}
+Jmax = {{ dyatel_gateway_awg_jmax }}
+S1 = {{ dyatel_gateway_awg_s1 }}
+S2 = {{ dyatel_gateway_awg_s2 }}
+H1 = {{ dyatel_gateway_awg_h1 }}
+H2 = {{ dyatel_gateway_awg_h2 }}
+H3 = {{ dyatel_gateway_awg_h3 }}
+H4 = {{ dyatel_gateway_awg_h4 }}
+
+{% if dyatel_gateway_awg_client_public_key | default('', true) %}
+[Peer]
+PublicKey = {{ dyatel_gateway_awg_client_public_key }}
+AllowedIPs = {{ dyatel_gateway_awg_client_allowed_ips }}
+{% endif %}

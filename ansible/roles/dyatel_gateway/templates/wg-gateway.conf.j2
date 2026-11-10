@@ -1,0 +1,11 @@
+# Managed by Dyatel - do not edit directly
+[Interface]
+Address = {{ dyatel_gateway_wg_address_ipv4 }}, {{ dyatel_gateway_wg_address_ipv6 }}
+ListenPort = {{ dyatel_gateway_wg_port }}
+PrivateKey = {{ dyatel_gateway_wg_private_key }}
+
+{% if dyatel_gateway_wg_client_public_key | default('', true) %}
+[Peer]
+PublicKey = {{ dyatel_gateway_wg_client_public_key }}
+AllowedIPs = {{ dyatel_gateway_wg_client_allowed_ips }}
+{% endif %}

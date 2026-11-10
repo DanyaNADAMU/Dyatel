@@ -1,0 +1,37 @@
+---
+# ==============================================================================
+# Tasks: Dyatel Mock Game Server Module (For Verification & Testing)
+# ==============================================================================
+
+- name: Install Python interpreter for mock server
+  ansible.builtin.apt:
+    name: python3
+    state: present
+
+- name: Deploy Dyatel mock game server script
+  ansible.builtin.template:
+    src: dyatel-mock.py.j2
+    dest: /usr/local/bin/dyatel-mock.py
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart dyatel mock server
+
+- name: Deploy Dyatel mock systemd unit
+  ansible.builtin.template:
+    src: dyatel-mock.service.j2
+    dest: /etc/systemd/system/dyatel-mock.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dyatel mock server
+
+- name: Flush handlers before service activation
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure Dyatel mock game server service is enabled and started
+  ansible.builtin.systemd:
+    name: dyatel-mock.service
+    state: started
+    enabled: true
+    daemon_reload: true

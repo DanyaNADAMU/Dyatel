@@ -1,0 +1,9 @@
+---
+# ==============================================================================
+# Playbook: Deploy Dyatel Client Node
+# ==============================================================================
+- name: Deploy Dyatel Client Node
+  hosts: node
+  become: true
+  roles:
+    - role: dyatel_node

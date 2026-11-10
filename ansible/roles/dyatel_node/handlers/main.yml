@@ -1,0 +1,25 @@
+---
+# ==============================================================================
+# Role Handlers: Dyatel Client Node (dyatel_node)
+# ==============================================================================
+
+- name: Restart wireguard node
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ dyatel_node_wg_interface }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Restart awg node
+  ansible.builtin.systemd:
+    name: "awg-quick@{{ dyatel_node_awg_interface }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Restart dyatel mock server
+  ansible.builtin.systemd:
+    name: dyatel-mock.service
+    state: restarted
+    enabled: true
+    daemon_reload: true

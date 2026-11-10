@@ -1,0 +1,27 @@
+---
+# ==============================================================================
+# Role Handlers: Dyatel Gateway (dyatel_gateway)
+# ==============================================================================
+
+- name: Restart wireguard gateway
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ dyatel_gateway_wg_interface }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Restart awg gateway
+  ansible.builtin.systemd:
+    name: "awg-quick@{{ dyatel_gateway_awg_interface }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded
+
+- name: Apply sysctl
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: true

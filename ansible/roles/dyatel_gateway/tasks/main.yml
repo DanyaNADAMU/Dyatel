@@ -1,0 +1,20 @@
+---
+# ==============================================================================
+# Role Tasks: Dyatel Gateway (dyatel_gateway)
+# ==============================================================================
+
+- name: Execute WireGuard gateway transport module
+  ansible.builtin.include_tasks: wireguard.yml
+  when:
+    - dyatel_gateway_state == "present"
+    - dyatel_gateway_enable_wireguard | default(true)
+
+- name: Execute AmneziaWG gateway transport module
+  ansible.builtin.include_tasks: amnezia.yml
+  when:
+    - dyatel_gateway_state == "present"
+    - dyatel_gateway_enable_amneziawg | default(false)
+
+- name: Execute Dyatel gateway teardown module
+  ansible.builtin.include_tasks: uninstall.yml
+  when: dyatel_gateway_state == "absent"

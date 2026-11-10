@@ -1,0 +1,71 @@
+---
+# ==============================================================================
+# Playbook: Complete End-to-End Dyatel Deployment (Gateway + Node)
+# ==============================================================================
+
+- name: Phase 1 - Cryptographic Key Discovery & Peer Exchange
+  hosts: gateway, node
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure WireGuard tools are installed
+      ansible.builtin.apt:
+        name:
+          - wireguard
+          - wireguard-tools
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Check if WireGuard private key exists
+      ansible.builtin.stat:
+        path: "/etc/wireguard/wg-dyatel.key"
+      register: dyatel_key_stat
+
+    - name: Generate WireGuard private key if missing
+      ansible.builtin.command:
+        cmd: wg genkey
+      register: dyatel_privkey_gen
+      when: not dyatel_key_stat.stat.exists
+      changed_when: true
+
+    - name: Save WireGuard private key
+      ansible.builtin.copy:
+        content: "{{ dyatel_privkey_gen.stdout }}\n"
+        dest: "/etc/wireguard/wg-dyatel.key"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not dyatel_key_stat.stat.exists
+
+    - name: Read WireGuard private key
+      ansible.builtin.slurp:
+        path: "/etc/wireguard/wg-dyatel.key"
+      register: dyatel_privkey_slurp
+
+    - name: Derive WireGuard public key
+      ansible.builtin.command:
+        cmd: wg pubkey
+        stdin: "{{ dyatel_privkey_slurp.content | b64decode | trim }}"
+      register: dyatel_pubkey_cmd
+      changed_when: false
+
+    - name: Register node public key fact
+      ansible.builtin.set_fact:
+        discovered_dyatel_public_key: "{{ dyatel_pubkey_cmd.stdout | trim }}"
+
+- name: Phase 2 - Deploy Ingress Gateway
+  hosts: gateway
+  become: true
+  roles:
+    - role: dyatel_gateway
+      vars:
+        dyatel_gateway_wg_client_public_key: "{{ hostvars[groups['node'][0]]['discovered_dyatel_public_key'] }}"
+
+- name: Phase 3 - Deploy Client Node
+  hosts: node
+  become: true
+  roles:
+    - role: dyatel_node
+      vars:
+        dyatel_node_wg_gateway_public_key: "{{ hostvars[groups['gateway'][0]]['discovered_dyatel_public_key'] }}"

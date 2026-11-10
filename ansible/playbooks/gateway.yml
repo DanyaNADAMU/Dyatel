@@ -1,0 +1,9 @@
+---
+# ==============================================================================
+# Playbook: Deploy Dyatel Ingress Gateway
+# ==============================================================================
+- name: Deploy Dyatel Ingress Gateway
+  hosts: gateway
+  become: true
+  roles:
+    - role: dyatel_gateway

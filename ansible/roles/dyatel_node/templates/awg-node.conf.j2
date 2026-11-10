@@ -1,0 +1,20 @@
+# Managed by Dyatel - do not edit directly
+[Interface]
+Address = {{ dyatel_node_awg_address_ipv4 }}, {{ dyatel_node_awg_address_ipv6 }}
+PrivateKey = {{ dyatel_node_awg_private_key }}
+
+Jc = {{ dyatel_node_awg_jc }}
+Jmin = {{ dyatel_node_awg_jmin }}
+Jmax = {{ dyatel_node_awg_jmax }}
+S1 = {{ dyatel_node_awg_s1 }}
+S2 = {{ dyatel_node_awg_s2 }}
+H1 = {{ dyatel_node_awg_h1 }}
+H2 = {{ dyatel_node_awg_h2 }}
+H3 = {{ dyatel_node_awg_h3 }}
+H4 = {{ dyatel_node_awg_h4 }}
+
+[Peer]
+PublicKey = {{ dyatel_node_awg_gateway_public_key }}
+Endpoint = {{ dyatel_node_awg_gateway_endpoint }}
+AllowedIPs = {{ dyatel_node_awg_allowed_ips }}
+PersistentKeepalive = {{ dyatel_node_awg_persistent_keepalive }}

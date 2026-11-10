@@ -1,0 +1,26 @@
+---
+# ==============================================================================
+# Role Tasks: Dyatel Client Node (dyatel_node)
+# ==============================================================================
+
+- name: Execute WireGuard node transport module
+  ansible.builtin.include_tasks: wireguard.yml
+  when:
+    - dyatel_node_state == "present"
+    - dyatel_node_enable_wireguard | default(true)
+
+- name: Execute AmneziaWG node transport module
+  ansible.builtin.include_tasks: amnezia.yml
+  when:
+    - dyatel_node_state == "present"
+    - dyatel_node_enable_amneziawg | default(false)
+
+- name: Execute Mock test server module
+  ansible.builtin.include_tasks: mock.yml
+  when:
+    - dyatel_node_state == "present"
+    - dyatel_node_mock_server_enabled | default(false)
+
+- name: Execute Dyatel node teardown module
+  ansible.builtin.include_tasks: uninstall.yml
+  when: dyatel_node_state == "absent"

@@ -1,0 +1,52 @@
+---
+# ==============================================================================
+# Tasks: Dyatel Gateway Teardown Module
+# ==============================================================================
+
+- name: Stop and disable WireGuard and AmneziaWG gateway services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - "wg-quick@{{ dyatel_gateway_wg_interface }}"
+    - "awg-quick@{{ dyatel_gateway_awg_interface }}"
+  failed_when: false
+
+- name: Remove gateway configuration and key files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.conf"
+    - "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.key"
+    - "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.conf"
+    - "/etc/amnezia/amneziawg/{{ dyatel_gateway_awg_interface }}.key"
+    - "/etc/sysctl.d/99-ansible-dyatel-forward.conf"
+
+- name: Remove isolation and NAT rules blocks from /etc/ufw/before.rules
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: {{ item }}"
+    state: absent
+  loop:
+    - "DYATEL WG ISOLATION"
+    - "DYATEL AWG ISOLATION"
+    - "DYATEL WG NAT"
+  notify: Reload ufw
+
+- name: Remove game port and tunnel ports from UFW
+  community.general.ufw:
+    rule: allow
+    to_port: "{{ item.port | string }}"
+    proto: "{{ item.proto }}"
+    delete: true
+  loop:
+    - { port: "{{ dyatel_gateway_game_port }}", proto: "{{ dyatel_gateway_game_protocol }}" }
+    - { port: "{{ dyatel_gateway_wg_port }}", proto: "udp" }
+    - { port: "{{ dyatel_gateway_awg_port }}", proto: "udp" }
+  failed_when: false
+  notify: Reload ufw
+
+- name: Flush handlers to ensure clean firewall state
+  ansible.builtin.meta: flush_handlers

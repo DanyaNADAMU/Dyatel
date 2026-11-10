@@ -1,0 +1,10 @@
+# Managed by Dyatel - do not edit directly
+[Interface]
+Address = {{ dyatel_node_wg_address_ipv4 }}, {{ dyatel_node_wg_address_ipv6 }}
+PrivateKey = {{ dyatel_node_wg_private_key }}
+
+[Peer]
+PublicKey = {{ dyatel_node_wg_gateway_public_key }}
+Endpoint = {{ dyatel_node_wg_gateway_endpoint }}
+AllowedIPs = {{ dyatel_node_wg_allowed_ips }}
+PersistentKeepalive = {{ dyatel_node_wg_persistent_keepalive }}

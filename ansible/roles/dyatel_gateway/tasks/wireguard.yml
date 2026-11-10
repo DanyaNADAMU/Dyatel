@@ -1,0 +1,161 @@
+---
+# ==============================================================================
+# Tasks: Dyatel WireGuard Gateway Transport Module
+# ==============================================================================
+
+- name: Install WireGuard and netfilter system dependencies
+  ansible.builtin.apt:
+    name:
+      - wireguard
+      - wireguard-tools
+      - iptables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Deploy kernel IP forwarding sysctl drop-in
+  ansible.builtin.template:
+    src: 99-ansible-dyatel-forward.conf.j2
+    dest: /etc/sysctl.d/99-ansible-dyatel-forward.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply sysctl
+
+- name: Ensure sysctl forwarding parameters are activated immediately
+  ansible.builtin.command:
+    cmd: sysctl -p /etc/sysctl.d/99-ansible-dyatel-forward.conf
+  changed_when: false
+
+- name: Check if WireGuard gateway private key exists
+  ansible.builtin.stat:
+    path: "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.key"
+  register: dyatel_gateway_wg_key_stat
+
+- name: Generate WireGuard gateway private key if missing
+  ansible.builtin.command:
+    cmd: wg genkey
+  register: dyatel_gateway_wg_privkey_gen
+  when: not dyatel_gateway_wg_key_stat.stat.exists
+  changed_when: true
+
+- name: Save WireGuard gateway private key
+  ansible.builtin.copy:
+    content: "{{ dyatel_gateway_wg_privkey_gen.stdout }}\n"
+    dest: "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.key"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not dyatel_gateway_wg_key_stat.stat.exists
+
+- name: Read WireGuard gateway private key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.key"
+  register: dyatel_gateway_wg_privkey_slurp
+
+- name: Set WireGuard gateway private key fact
+  ansible.builtin.set_fact:
+    dyatel_gateway_wg_private_key: "{{ dyatel_gateway_wg_privkey_slurp.content | b64decode | trim }}"
+
+- name: Derive WireGuard gateway public key
+  ansible.builtin.command:
+    cmd: wg pubkey
+    stdin: "{{ dyatel_gateway_wg_private_key }}"
+  register: dyatel_gateway_wg_pubkey_cmd
+  changed_when: false
+
+- name: Set WireGuard gateway public key fact
+  ansible.builtin.set_fact:
+    dyatel_gateway_wg_public_key: "{{ dyatel_gateway_wg_pubkey_cmd.stdout | trim }}"
+
+- name: Deploy WireGuard gateway interface configuration
+  ansible.builtin.template:
+    src: wg-gateway.conf.j2
+    dest: "/etc/wireguard/{{ dyatel_gateway_wg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart wireguard gateway
+
+- name: Allow WireGuard UDP listener port in UFW
+  community.general.ufw:
+    rule: allow
+    to_port: "{{ dyatel_gateway_wg_port | string }}"
+    proto: udp
+    comment: "Dyatel WireGuard Transport"
+  notify: Reload ufw
+
+- name: Allow Game TCP port in UFW
+  community.general.ufw:
+    rule: allow
+    to_port: "{{ dyatel_gateway_game_port | string }}"
+    proto: "{{ dyatel_gateway_game_protocol }}"
+    comment: "Dyatel Ingress Game Port"
+  notify: Reload ufw
+
+- name: Allow routed TCP traffic to client node in UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ dyatel_gateway_wg_client_ip_ipv4 }}"
+    to_port: "{{ dyatel_gateway_game_port | string }}"
+    proto: "{{ dyatel_gateway_game_protocol }}"
+    comment: "Dyatel forward to client node"
+  notify: Reload ufw
+
+- name: Allow routed IPv6 traffic to client node in UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ dyatel_gateway_wg_client_ip_ipv6 }}"
+    to_port: "{{ dyatel_gateway_game_port | string }}"
+    proto: "{{ dyatel_gateway_game_protocol }}"
+    comment: "Dyatel forward IPv6 to client node"
+  notify: Reload ufw
+
+- name: Insert gateway isolation rules into /etc/ufw/before.rules
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    insertafter: "^:ufw-not-local"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: DYATEL WG ISOLATION"
+    block: |
+      -A ufw-before-input -i {{ dyatel_gateway_wg_interface }} -p tcp -m multiport --dports 22,80,443,4001,4021,4055,4066 -j DROP
+      {% for subnet in dyatel_gateway_isolated_subnets %}
+      -A ufw-before-forward -i {{ dyatel_gateway_wg_interface }} -d {{ subnet }} -j DROP
+      {% endfor %}
+  notify: Reload ufw
+
+- name: Insert NAT PREROUTING and POSTROUTING rules into /etc/ufw/before.rules
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    insertbefore: "^\\*filter"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK: DYATEL WG NAT"
+    block: |
+      *nat
+      :PREROUTING ACCEPT [0:0]
+      :OUTPUT ACCEPT [0:0]
+      :POSTROUTING ACCEPT [0:0]
+      {% set proto = dyatel_gateway_game_protocol %}
+      {% set iface = dyatel_gateway_wg_interface %}
+      {% set cip = dyatel_gateway_wg_client_ip_ipv4 %}
+      {% set gport = dyatel_gateway_game_port %}
+      {% set target = cip ~ ':' ~ (gport | string) %}
+      -A PREROUTING -p {{ proto }} --dport {{ gport }} -j DNAT --to-destination {{ target }}
+      -A OUTPUT -p {{ proto }} -d {{ ansible_host }} --dport {{ gport }} -j DNAT --to-destination {{ target }}
+      -A POSTROUTING -o {{ iface }} -d {{ cip }} -p {{ proto }} --dport {{ gport }} -j MASQUERADE
+      COMMIT
+
+      *mangle
+      :FORWARD ACCEPT [0:0]
+      -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+      COMMIT
+  notify: Reload ufw
+
+- name: Flush handlers before service start
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure WireGuard gateway service is enabled and started
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ dyatel_gateway_wg_interface }}"
+    state: started
+    enabled: true
