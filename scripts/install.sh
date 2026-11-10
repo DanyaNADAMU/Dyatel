@@ -119,9 +119,15 @@ fi
 
 # Detect package manager and install dependencies
 log_info "Verifying system packages..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq wireguard-tools ufw iproute2 iptables openresolv curl procps
+if command -v apt-get &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq wireguard-tools ufw iproute2 iptables openresolv curl procps
+elif command -v pacman &>/dev/null; then
+    pacman -S --needed --noconfirm wireguard-tools iptables openresolv curl procps
+elif command -v dnf &>/dev/null; then
+    dnf install -y wireguard-tools iptables openresolv curl procps
+fi
 
 # Setup Gateway Role
 install_gateway() {
