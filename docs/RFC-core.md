@@ -468,15 +468,16 @@ Phase 1 alone already satisfies "usable without UI" (§2.5).
 1. ~~Public berg port per host~~ — **resolved: per-host ports** (§3.4a).
 2. ~~IPv6 endpoint dials~~ — moot: endpoint is a DNS name resolving
    to both A and AAAA.
-3. ~~DNS zone for forward records~~ — **resolved by testbed-first**:
-   all phase 1–3 work targets the `test` Incus VM on berg (glacier
-   mirror) under `dyatel.test.nada.mu` — inside the AGENTS.md §10
-   whitelist. Production zone decision (dedicated `dyatel.nada.mu`
-   wildcard vs §10 whitelist extension) is deferred to the release
-   gate; note the existing apex wildcard resolves to glacier, not
-   berg — do not rely on it.
-4. Base domain for the core API vhost: `api.dyatel.test.nada.mu`
-   on staging; production vhost decision at release-gate time.
+3. ~~DNS zone for forward records~~ — **resolved**: staging stays on
+   `dyatel.test.nada.mu`. Production zone decision (dedicated
+   `dyatel.nada.mu` wildcard vs §10 whitelist extension) is the
+   user's call at the release gate; no production deployment
+   without explicit user approval. Note the existing apex wildcard
+   resolves to glacier, not berg — do not rely on it.
+4. ~~Base domain for the core API vhost~~ — **resolved**: staging
+   `api.dyatel.test.nada.mu`; production `api.dyatel.nada.mu` on
+   berg (existing nginx+ACME → `127.0.0.1:8100`), deployed only at
+   the user-approved release gate.
 
 ## 12. Stack decision
 
