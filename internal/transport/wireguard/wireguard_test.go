@@ -188,3 +188,18 @@ func TestRenderGWConfigAWG(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderGWConfigEmptyProxerKeyOmitsPeer(t *testing.T) {
+	w := testWG()
+	h := testHost("myhost", "wireguard")
+	h.WGPublicKey = "" // BYOK key not registered yet
+	h.ConsumerWGPublicKey = nil
+	cfgB, err := w.RenderGWConfig(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(cfgB)
+	if strings.Contains(cfg, "[Peer]") {
+		t.Fatalf("peer rendered with empty proxer key:\n%s", cfg)
+	}
+}

@@ -158,9 +158,13 @@ func (w *WG) RenderGWConfig(h store.Host) ([]byte, error) {
 	}
 	b.WriteString("Table = off\n")
 	b.WriteString(fmt.Sprintf("# proxer %s (%s)\n", h.Name, h.Transport))
-	b.WriteString(fmt.Sprintf("[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s, %s\n\n",
-		h.WGPublicKey, h.WGPreSharedKey,
-		strings.TrimSuffix(h.TunnelIPv4, "/32"), strings.TrimSuffix(h.TunnelIPv6, "/128")))
+	// The proxer peer exists only when its BYOK key is registered; a
+	// consumer-only host renders a valid peerless config until then.
+	if h.WGPublicKey != "" {
+		b.WriteString(fmt.Sprintf("[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s, %s\n\n",
+			h.WGPublicKey, h.WGPreSharedKey,
+			strings.TrimSuffix(h.TunnelIPv4, "/32"), strings.TrimSuffix(h.TunnelIPv6, "/128")))
+	}
 	if h.ConsumerWGPublicKey != nil && *h.ConsumerWGPublicKey != "" && h.ConsumerTunnelIPv4 != nil {
 		b.WriteString("# consumer\n")
 		b.WriteString(fmt.Sprintf("[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s, %s\n\n",

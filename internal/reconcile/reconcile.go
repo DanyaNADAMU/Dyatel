@@ -257,11 +257,17 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path s
 				tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
 		return err
 	}
-	// No kernel module: transient amneziawg-go unit owns the interface
-	// (vendored awg-quick pattern: binary takes the tun name as argv).
+	// No kernel module: transient unit starts userspace amneziawg-go owning
+	// the tun (vendored awg-quick pattern: binary takes the tun name as argv).
+	// amneziawg-go daemonizes (forks into the background), so the unit's
+	// main process exits immediately: Type=forking tells systemd to adopt
+	// the forked child as the main PID. Without it the unit deactivates on
+	// parent exit and KillMode=control-group kills the daemon, losing the
+	// tun. Supervision comes from the reconcile pass instead: if the daemon
+	// dies, its tun disappears and the next pass re-runs this unit.
 	if out, err := run(ctx, "systemctl", "is-active", awgUnitName(ifname)); err != nil || strings.TrimSpace(out) != "active" {
 		if _, err := run(ctx, "systemd-run", "--unit", awgUnitName(ifname),
-			"--property", "Restart=always", "--property", "RestartSec=2",
+			"--property", "Type=forking",
 			"/usr/local/bin/amneziawg-go", ifname); err != nil {
 			return fmt.Errorf("userspace fallback: %w", err)
 		}
