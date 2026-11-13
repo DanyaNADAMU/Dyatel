@@ -6,13 +6,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User={{ dyatel_core_user }}
-Group={{ dyatel_core_group }}
+# Core manipulates wg/iptables/ufw at runtime (RFC §9): runs as root.
+# Not a User=/Group= drop: CAP_NET_ADMIN + root-owned UFW state files
+# leave no practical capability-only middle ground.
 EnvironmentFile={{ dyatel_core_env_file }}
 ExecStart={{ dyatel_core_binary }}
 Restart=on-failure
 RestartSec=5
-# Core manipulates wg/iptables/ufw at runtime (RFC §9): needs root.
 # Hardening that still allows netlink + nftables:
 NoNewPrivileges=true
 ProtectHome=true

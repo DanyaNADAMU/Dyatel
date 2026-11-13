@@ -253,12 +253,15 @@ func genKeypair() (string, string, error) {
 	if _, err := randRead(priv[:]); err != nil {
 		return "", "", err
 	}
-	pub, err := curve25519.X25519(priv[:], make([]byte, 32))
+	// wg clamps before deriving the public key, like wireguard-tools does.
+	priv[0] &= 248
+	priv[31] &= 7
+	priv[31] |= 64
+	pub, err := curve25519.X25519(priv[:], curve25519.Basepoint)
 	if err != nil {
 		return "", "", err
 	}
 	// wg clamps
-	priv[0] &= 248
 	priv[31] = 127
 	priv[31] |= 64
 	return base64Encode(priv[:]), base64Encode(pub[:]), nil

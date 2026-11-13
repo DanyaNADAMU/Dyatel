@@ -148,6 +148,9 @@ func scanHosts(rows pgx.Rows, err error) ([]Host, error) {
 }
 
 func (s *Store) CreateHost(ctx context.Context, h *Host) error {
+	if len(h.Params) == 0 {
+		h.Params = []byte("{}") // params jsonb NOT NULL default
+	}
 	return s.Pool.QueryRow(ctx,
 		`INSERT INTO hosts (name, owner_id, consumer_id, wg_public_key, wg_preshared_key,
 		   gw_private_key, gw_public_key, tunnel_ipv4, tunnel_ipv6,
@@ -254,8 +257,10 @@ func (s *Store) Event(ctx context.Context, userID uuid.UUID, authMethod, action,
 // UsedTunnelIPs / UsedPorts let the allocator avoid taken values.
 func (s *Store) UsedTunnelIPs(ctx context.Context) (map[string]bool, map[string]bool, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT tunnel_ipv4::text, tunnel_ipv6::text,
-		        consumer_tunnel_ipv4::text, consumer_tunnel_ipv6::text
+		// host() strips the netmask: inet::text keeps "/32" and would
+		// never match the bare IPs the allocator compares against.
+		`SELECT host(tunnel_ipv4)::text, host(tunnel_ipv6)::text,
+		        host(consumer_tunnel_ipv4)::text, host(consumer_tunnel_ipv6)::text
 		 FROM hosts`)
 	if err != nil {
 		return nil, nil, err

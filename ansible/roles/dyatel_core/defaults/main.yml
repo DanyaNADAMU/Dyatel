@@ -67,11 +67,13 @@ dyatel_core_db_pool_max: 4
 dyatel_core_cloudflare_token: "{{ vault_dyatel_cloudflare_token | default('') }}"
 dyatel_core_dns_zone: "{{ dyatel_core_base_domain | default('nada.mu') }}"
 
-# Packages (RFC §9 table): wireguard-tools, amneziawg-tools, postgres client
+# Packages (RFC §9 table). amneziawg-tools is NOT in Debian 13 repos and
+# AWG transport is Phase 1b anyway; add it via override once needed
+# (e.g. upstream .deb or built from source).
 dyatel_core_packages:
   - wireguard-tools
-  - amneziawg-tools
   - python3-psycopg2
+  - acl  # ansible-core needs it to become_user: postgres
 
 # Purge packages on uninstall (data/system effects handled below)
 dyatel_core_purge_packages: false
