@@ -111,7 +111,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 
 // pass renders desired state for all hosts and applies it (no-bounce).
 func (r *Reconciler) pass(ctx context.Context) {
-	hosts, err := r.st.Hosts(ctx)
+	// Only this node's hosts: other daemons own theirs (DYATEL_NODE).
+	hosts, err := r.st.HostsByNode(ctx, r.cfg.Node)
 	if err != nil {
 		r.lastErr(fmt.Errorf("load hosts: %w", err))
 		return
@@ -227,7 +228,7 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 }
 
 func (r *Reconciler) Status(ctx context.Context) map[string]any {
-	hosts, err := r.st.Hosts(ctx)
+	hosts, err := r.st.HostsByNode(ctx, r.cfg.Node)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}

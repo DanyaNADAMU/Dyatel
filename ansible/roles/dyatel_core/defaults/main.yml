@@ -35,6 +35,11 @@ dyatel_core_awg_ports_max: 51999
 dyatel_core_xray_ports_min: 5200
 dyatel_core_xray_ports_max: 5299
 
+# Daemon node identity (RFC §4 multi-node): this daemon reconciles only
+# hosts where hosts.node matches. 'test' = staging node, 'berg' = prod
+# proxer node; both share one PG on test over incusbr0.
+dyatel_core_node: "test"
+
 # Reconcile loop period (seconds)
 dyatel_core_reconcile_every: 15
 

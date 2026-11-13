@@ -172,7 +172,7 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := &store.Host{
-		Name: in.Name, OwnerID: id.User.ID, ConsumerID: consumer,
+		Name: in.Name, Node: s.cfg.Node, OwnerID: id.User.ID, ConsumerID: consumer,
 		WGPublicKey: in.PublicKey,
 		TunnelIPv4: tv4, TunnelIPv6: tv6,
 		Transport: in.Transport, ListenPort: port,

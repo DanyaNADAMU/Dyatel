@@ -16,6 +16,10 @@ type Config struct {
 	// Reconcile tick interval in seconds.
 	ReconcileEverySec int
 
+	// Daemon node identity: each daemon reconciles only hosts where
+	// hosts.node = Node (multi-node, one shared PG, RFC §4).
+	Node string
+
 	// Berg-side tunnel network: per-host /32 and /128 are carved out of it.
 	TunnelIPv4Net string // e.g. 10.13.36.0/24
 	TunnelIPv6Net string // e.g. fd00:36::/64
@@ -71,6 +75,7 @@ func Load() (*Config, error) {
 		Bind:                env("DYATEL_BIND", "127.0.0.1:8100"),
 		DatabaseDSN:         env("DYATEL_DB_DSN", ""),
 		ReconcileEverySec:   envInt("DYATEL_RECONCILE_EVERY", 15),
+		Node:                env("DYATEL_NODE", "test"),
 		TunnelIPv4Net:       env("DYATEL_TUNNEL_V4", "10.13.36.0/24"),
 		TunnelIPv6Net:       env("DYATEL_TUNNEL_V6", "fd00:36::/64"),
 		PortPoolWGMin:       envInt("DYATEL_WG_PORTS_MIN", 51820),

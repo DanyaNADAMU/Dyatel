@@ -36,6 +36,7 @@ type User struct {
 type Host struct {
 	ID             uuid.UUID
 	Name           string
+	Node           string
 	OwnerID        uuid.UUID
 	ConsumerID     uuid.UUID
 	WGPublicKey    string
@@ -109,18 +110,23 @@ func (s *Store) Hosts(ctx context.Context) ([]Host, error) {
 	return scanHosts(s.Pool.Query(ctx, hostCols+` ORDER BY created_at`))
 }
 
+// HostsByNode returns the hosts a given daemon node owns and reconciles.
+func (s *Store) HostsByNode(ctx context.Context, node string) ([]Host, error) {
+	return scanHosts(s.Pool.Query(ctx, hostCols+` WHERE node=$1 ORDER BY created_at`, node))
+}
+
 func (s *Store) HostsByUser(ctx context.Context, uid uuid.UUID) ([]Host, error) {
 	return scanHosts(s.Pool.Query(ctx, hostCols+` WHERE owner_id=$1 OR consumer_id=$1 ORDER BY created_at`, uid))
 }
 
-const hostCols = `SELECT id, name, owner_id, consumer_id, wg_public_key, wg_preshared_key,
+const hostCols = `SELECT id, name, node, owner_id, consumer_id, wg_public_key, wg_preshared_key,
 	gw_private_key, gw_public_key, tunnel_ipv4::text, tunnel_ipv6::text,
 	consumer_wg_public_key, consumer_tunnel_ipv4::text, consumer_tunnel_ipv6::text,
 	endpoint, transport, listen_port, params, keepalive, state FROM hosts`
 
 func scanHost(r pgx.Row) (*Host, error) {
 	var h Host
-	err := r.Scan(&h.ID, &h.Name, &h.OwnerID, &h.ConsumerID, &h.WGPublicKey,
+	err := r.Scan(&h.ID, &h.Name, &h.Node, &h.OwnerID, &h.ConsumerID, &h.WGPublicKey,
 		&h.WGPreSharedKey, &h.GWPrivateKey, &h.GWPublicKey, &h.TunnelIPv4,
 		&h.TunnelIPv6, &h.ConsumerWGPublicKey, &h.ConsumerTunnelIPv4,
 		&h.ConsumerTunnelIPv6, &h.Endpoint, &h.Transport, &h.ListenPort,
@@ -152,13 +158,13 @@ func (s *Store) CreateHost(ctx context.Context, h *Host) error {
 		h.Params = []byte("{}") // params jsonb NOT NULL default
 	}
 	return s.Pool.QueryRow(ctx,
-		`INSERT INTO hosts (name, owner_id, consumer_id, wg_public_key, wg_preshared_key,
+		`INSERT INTO hosts (name, node, owner_id, consumer_id, wg_public_key, wg_preshared_key,
 		   gw_private_key, gw_public_key, tunnel_ipv4, tunnel_ipv6,
 		   consumer_wg_public_key, consumer_tunnel_ipv4, consumer_tunnel_ipv6,
 		   endpoint, transport, listen_port, params, keepalive, state)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'active')
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'active')
 		 RETURNING id`,
-		h.Name, h.OwnerID, h.ConsumerID, h.WGPublicKey, h.WGPreSharedKey,
+		h.Name, h.Node, h.OwnerID, h.ConsumerID, h.WGPublicKey, h.WGPreSharedKey,
 		h.GWPrivateKey, h.GWPublicKey, h.TunnelIPv4, h.TunnelIPv6,
 		h.ConsumerWGPublicKey, h.ConsumerTunnelIPv4, h.ConsumerTunnelIPv6,
 		h.Endpoint, h.Transport, h.ListenPort, h.Params, h.Keepalive).Scan(&h.ID)
