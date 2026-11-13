@@ -139,6 +139,44 @@
   notify: Restart dyatel-core
   tags: [build]
 
+# --- dyatelctl CLI (same build-and-ship path as the core) ---
+
+- name: Build dyatelctl binary on the control host  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: "{{ dyatel_core_go_bin }} build -trimpath -o /tmp/dyatelctl-build ./cmd/dyatelctl"
+    chdir: "{{ dyatel_core_local_src }}"
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_ctl_build_res
+  changed_when: false
+  tags: [build]
+
+- name: Record control-host dyatelctl checksum
+  ansible.builtin.stat:
+    path: /tmp/dyatelctl-build
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_ctl_local_binary
+  tags: [build]
+
+- name: Check target dyatelctl checksum
+  ansible.builtin.stat:
+    path: "{{ dyatel_core_ctl_binary }}"
+    checksum_algorithm: sha256
+  register: dyatel_core_ctl_target_binary
+  tags: [build]
+
+- name: Copy dyatelctl binary when changed
+  ansible.builtin.copy:
+    src: /tmp/dyatelctl-build
+    dest: "{{ dyatel_core_ctl_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: (dyatel_core_ctl_target_binary.stat.checksum | default('')) != (dyatel_core_ctl_local_binary.stat.checksum | default(''))
+  tags: [build]
+
 # --- Configuration and unit ---
 
 - name: Ensure dyatel config directory exists

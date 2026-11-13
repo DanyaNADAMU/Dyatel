@@ -12,6 +12,9 @@ dyatel_core_group: "dyatel"
 
 # Paths
 dyatel_core_binary: "/usr/local/bin/dyatel-core"
+# CLI sibling binary: same build-and-ship path as the core (no release
+# artifacts yet); installed on the daemon host for break-glass operators.
+dyatel_core_ctl_binary: "/usr/local/bin/dyatelctl"
 dyatel_core_config_dir: "/etc/dyatel"
 dyatel_core_env_file: "{{ dyatel_core_config_dir }}/core.env"
 
