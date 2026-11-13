@@ -50,6 +50,7 @@
     recurse: false
   register: dyatel_core_pg_dirs
   tags: [config, database]
+  when: dyatel_core_db_manage | bool
 
 - name: Set PostgreSQL version fact
   ansible.builtin.set_fact:
