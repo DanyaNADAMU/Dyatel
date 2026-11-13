@@ -1,12 +1,23 @@
 // Package xrayvless renders xray configs for the xray-vless transport
 // (RFC §3.4a, phase 2). Topology: one VLESS leg per host —
-// consumer →(vless over TCP+TLS)→ berg — where berg terminates TLS and
-// dials the real destination with a freedom outbound. The VLESS protocol
-// carries the destination address itself, so berg needs no per-forward
-// config: each consumer forward is a dokodemo-door inbound whose
-// destination is proxer_endpoint:target_port, routed into the vless
-// outbound. TLS is masking only; REALITY is deliberately rejected
-// (ParseXrayParams) until a need proves otherwise.
+// consumer →(vless over TLS)→ berg — where berg dials the real
+// destination with a freedom outbound. The VLESS protocol carries the
+// destination address itself, so berg needs no per-forward config: each
+// consumer forward is a dokodemo-door inbound whose destination is
+// proxer_endpoint:target_port, routed into the vless outbound.
+//
+// Masquerade modes (copied from the Infra Glacier/Floe pattern):
+//
+//   - ModeTLS ("tls", default, Floe style): xray owns the public pool
+//     port with real TLS; an optional fallback Dest sends non-VLESS
+//     visitors to a real local service, so a probe sees a live site.
+//   - ModeNginx ("nginx", Glacier style): xray listens on 127.0.0.1
+//     only, transport VLESS over WebSocket with security "none"; TLS is
+//     terminated by the operator's nginx on the real vhost, and the
+//     masquerade WSPath lives inside a legitimate site URL.
+//
+// TLS is masking only; REALITY is deliberately rejected (ParseXrayParams)
+// until a need proves otherwise.
 package xrayvless
 
 import (
@@ -29,6 +40,13 @@ const (
 	KeyPlaceholder  = "{{DYATEL_KEY_PEM}}"
 )
 
+// Masquerade modes (params.mode). ModeTLS is the default so existing
+// params keep rendering a working config.
+const (
+	ModeTLS   = "tls"   // xray owns the public port (Floe)
+	ModeNginx = "nginx" // TLS terminated by nginx, VLESS over WS (Glacier)
+)
+
 // XrayParams are the transport-specific knobs in hosts.params jsonb.
 // sni / uuid / proxer_endpoint are required; the API injects the
 // generated uuid before validation (pair-shared credential, like the PSK).
@@ -39,6 +57,19 @@ type XrayParams struct {
 	CertFile       string `json:"cert_file,omitempty"` // path on berg
 	KeyFile        string `json:"key_file,omitempty"`  // path on berg
 	AllowInsecure  bool   `json:"allow_insecure,omitempty"`
+	// Mode picks the masquerade: ModeTLS (default) or ModeNginx.
+	Mode string `json:"mode,omitempty"`
+	// WSPath is the masquerade websocket path inside the real vhost
+	// URL space; required in nginx mode (Glacier: "/api/v1/events").
+	WSPath string `json:"ws_path,omitempty"`
+	// PublicPort is the berg-side public port the consumer dials in
+	// nginx mode (the vhost TLS port, 443 by default); the pool port
+	// stays loopback-only.
+	PublicPort int `json:"public_port,omitempty"`
+	// FallbackDest is the tls-mode dest (host:port) for non-VLESS
+	// visitors: a real local service, so a probe sees a live site
+	// instead of a dead TLS endpoint (Floe pattern).
+	FallbackDest string `json:"fallback,omitempty"`
 }
 
 // Xray renders xray configs for one host.
@@ -90,6 +121,49 @@ func ParseXrayParams(raw []byte) (XrayParams, error) {
 	}
 	if p.KeyFile != "" && p.CertFile == "" {
 		return XrayParams{}, fmt.Errorf("xray params: key_file requires cert_file")
+	}
+	switch p.Mode {
+	case "":
+		p.Mode = ModeTLS
+	case ModeTLS, ModeNginx:
+	default:
+		return XrayParams{}, fmt.Errorf("xray params: mode must be %q or %q", ModeTLS, ModeNginx)
+	}
+	if p.Mode == ModeNginx {
+		// Glacier pattern: the ws path is a real-looking URL inside the
+		// vhost; without it nginx has nothing to route on.
+		if p.WSPath == "" {
+			return XrayParams{}, fmt.Errorf("xray params: ws_path is required in nginx mode")
+		}
+		if !strings.HasPrefix(p.WSPath, "/") || hasSpace(p.WSPath) {
+			return XrayParams{}, fmt.Errorf("xray params: ws_path must be an absolute path without whitespace")
+		}
+		if p.PublicPort < 0 || p.PublicPort > 65535 {
+			return XrayParams{}, fmt.Errorf("xray params: public_port must be 1-65535")
+		}
+		if p.PublicPort == 0 {
+			p.PublicPort = 443 // the usual vhost TLS port behind berg's SNI mux
+		}
+		// In nginx mode xray never terminates TLS itself: certs on berg
+		// would be dead weight and confuse the operator.
+		if p.CertFile != "" || p.KeyFile != "" {
+			return XrayParams{}, fmt.Errorf("xray params: cert_file/key_file are tls-mode only (nginx terminates TLS upstream)")
+		}
+	} else {
+		if p.PublicPort != 0 {
+			return XrayParams{}, fmt.Errorf("xray params: public_port is nginx-mode only")
+		}
+		if p.WSPath != "" {
+			return XrayParams{}, fmt.Errorf("xray params: ws_path is nginx-mode only")
+		}
+		if p.FallbackDest != "" {
+			if _, _, err := net.SplitHostPort(p.FallbackDest); err != nil {
+				return XrayParams{}, fmt.Errorf("xray params: fallback must be host:port: %w", err)
+			}
+			if hasSpace(p.FallbackDest) {
+				return XrayParams{}, fmt.Errorf("xray params: fallback must not contain whitespace")
+			}
+		}
 	}
 	return p, nil
 }
@@ -170,6 +244,17 @@ type streamSettings struct {
 	Security    string       `json:"security"`
 	TLSSettings *tlsSettings `json:"tlsSettings,omitempty"`
 	TCPSettings *tcpSettings `json:"tcpSettings,omitempty"`
+	WSSettings  *wsSettings  `json:"wsSettings,omitempty"`
+}
+
+type wsSettings struct {
+	Path string `json:"path"`
+}
+
+// sniffing mirrors the Infra templates' destOverride set: http, tls, quic.
+type sniffing struct {
+	Enabled      bool     `json:"enabled"`
+	DestOverride []string `json:"destOverride"`
 }
 
 type tcpSettings struct {
@@ -194,8 +279,15 @@ type certificate struct {
 }
 
 type serverSettings struct {
-	Clients    []vlessClient `json:"clients"`
-	Decryption string        `json:"decryption"`
+	Clients    []vlessClient   `json:"clients"`
+	Decryption string          `json:"decryption"`
+	Fallbacks  []vlessFallback `json:"fallbacks,omitempty"`
+}
+
+// vlessFallback is the Floe-style decoy: non-VLESS traffic lands on a real
+// local service instead of a dead TLS endpoint.
+type vlessFallback struct {
+	Dest string `json:"dest"`
 }
 
 type vlessClient struct {
@@ -272,6 +364,7 @@ type serverInbound struct {
 	Protocol       string         `json:"protocol"`
 	Settings       serverSettings `json:"settings"`
 	StreamSettings streamSettings `json:"streamSettings"`
+	Sniffing       *sniffing      `json:"sniffing,omitempty"`
 	Tag            string         `json:"tag,omitempty"`
 }
 
@@ -303,33 +396,46 @@ func (x *Xray) RenderServerConfigMulti(hosts []store.Host) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("host %s: %w", h.Name, err)
 		}
-		// Certificates come from params: with cert_file set we point xray
-		// at the files on berg; without it we embed placeholders the
-		// operator must substitute locally (BYOK: the core never holds
-		// private keys).
+		// Masquerade per mode (Glacier/Floe pattern):
+		//   tls:   xray owns the public pool port with real TLS, plus an
+		//          optional fallback to a real local service.
+		//   nginx: xray stays loopback-only with plain VLESS over WS;
+		//          nginx terminates TLS and routes the ws_path to it.
+		listen := "0.0.0.0"
+		var ss streamSettings
+		fallbacks := []vlessFallback(nil)
 		var certs []certificate
-		if p.CertFile != "" {
-			certs = []certificate{{
-				CertificateFile: p.CertFile,
-				KeyFile:         p.KeyFile,
-			}}
+		if p.Mode == ModeNginx {
+			listen = "127.0.0.1"
+			ss = streamSettings{
+				Network:    "ws",
+				Security:   "none",
+				WSSettings: &wsSettings{Path: p.WSPath},
+			}
+			// Glacier pattern: TLS is terminated by the operator's nginx
+			// vhost, which must route the ws path to this loopback port.
+			comments = append(comments, fmt.Sprintf(
+				"host %s: terminate TLS in nginx on %s:%d and proxy_pass http://127.0.0.1:%d for location %s (websocket upgrade, long read timeout)",
+				h.Name, p.SNI, p.PublicPort, h.ListenPort, p.WSPath))
 		} else {
-			certs = []certificate{{
-				Certificate: []string{CertPlaceholder},
-				Key:         []string{KeyPlaceholder},
-			}}
-			comments = append(comments, fmt.Sprintf("host %s: substitute %s and %s with real PEM cert/key content on berg before starting xray (BYOK: the core never holds TLS private keys)",
-				h.Name, CertPlaceholder, KeyPlaceholder))
-		}
-		inbounds = append(inbounds, serverInbound{
-			Listen:   "0.0.0.0",
-			Port:     h.ListenPort,
-			Protocol: "vless",
-			Settings: serverSettings{
-				Clients:    []vlessClient{{ID: p.UUID, Flow: ""}},
-				Decryption: "none",
-			},
-			StreamSettings: streamSettings{
+			// Certificates come from params: with cert_file set we point
+			// xray at the files on berg; without it we embed placeholders
+			// the operator must substitute locally (BYOK: the core never
+			// holds private keys).
+			if p.CertFile != "" {
+				certs = []certificate{{
+					CertificateFile: p.CertFile,
+					KeyFile:         p.KeyFile,
+				}}
+			} else {
+				certs = []certificate{{
+					Certificate: []string{CertPlaceholder},
+					Key:         []string{KeyPlaceholder},
+				}}
+				comments = append(comments, fmt.Sprintf("host %s: substitute %s and %s with real PEM cert/key content on berg before starting xray (BYOK: the core never holds TLS private keys)",
+					h.Name, CertPlaceholder, KeyPlaceholder))
+			}
+			ss = streamSettings{
 				Network:  "tcp",
 				Security: "tls",
 				TLSSettings: &tlsSettings{
@@ -338,8 +444,23 @@ func (x *Xray) RenderServerConfigMulti(hosts []store.Host) ([]byte, error) {
 					Certificates:  certs,
 				},
 				TCPSettings: &tcpSettings{Header: &tcpHeader{Type: "none"}},
+			}
+			if p.FallbackDest != "" {
+				fallbacks = []vlessFallback{{Dest: p.FallbackDest}}
+			}
+		}
+		inbounds = append(inbounds, serverInbound{
+			Listen:   listen,
+			Port:     h.ListenPort,
+			Protocol: "vless",
+			Settings: serverSettings{
+				Clients:    []vlessClient{{ID: p.UUID, Flow: ""}},
+				Decryption: "none",
+				Fallbacks:  fallbacks,
 			},
-			Tag: "vless-in-" + h.Name,
+			StreamSettings: ss,
+			Sniffing:       &sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}},
+			Tag:            "vless-in-" + h.Name,
 		})
 	}
 	cfg := serverConfig{
@@ -402,6 +523,31 @@ func (x *Xray) RenderClientConfig(h store.Host, forwards []store.Forward) ([]byt
 			OutboundTag: "vless",
 		})
 	}
+	// VLESS leg endpoint: in nginx mode the consumer dials the masquerade
+	// vhost (SNI domain on its TLS port, routed by the operator's nginx
+	// to the loopback-only xray ws inbound); in tls mode it dials the
+	// berg pool port directly.
+	addr, port, outSS := x.cfg.PublicEndpointHost, h.ListenPort, &streamSettings{
+		Network:  "tcp",
+		Security: "tls",
+		TLSSettings: &tlsSettings{
+			ServerName:    p.SNI,
+			AllowInsecure: p.AllowInsecure,
+		},
+		TCPSettings: &tcpSettings{Header: &tcpHeader{Type: "none"}},
+	}
+	if p.Mode == ModeNginx {
+		addr, port = p.SNI, p.PublicPort
+		outSS = &streamSettings{
+			Network:  "ws",
+			Security: "tls",
+			TLSSettings: &tlsSettings{
+				ServerName:    p.SNI,
+				AllowInsecure: p.AllowInsecure,
+			},
+			WSSettings: &wsSettings{Path: p.WSPath},
+		}
+	}
 	cfg := clientConfig{
 		Log:      &logCfg{LogLevel: "warning"},
 		Inbounds: inbounds,
@@ -410,8 +556,8 @@ func (x *Xray) RenderClientConfig(h store.Host, forwards []store.Forward) ([]byt
 			Tag:      "vless",
 			Settings: vlessOutboundSettings{
 				Vnext: []vnextServer{{
-					Address: x.cfg.PublicEndpointHost,
-					Port:    h.ListenPort,
+					Address: addr,
+					Port:    port,
 					Users: []vlessUser{{
 						ID:         p.UUID,
 						Flow:       "",
@@ -420,15 +566,7 @@ func (x *Xray) RenderClientConfig(h store.Host, forwards []store.Forward) ([]byt
 					}},
 				}},
 			},
-			StreamSettings: &streamSettings{
-				Network:  "tcp",
-				Security: "tls",
-				TLSSettings: &tlsSettings{
-					ServerName:    p.SNI,
-					AllowInsecure: p.AllowInsecure,
-				},
-				TCPSettings: &tcpSettings{Header: &tcpHeader{Type: "none"}},
-			},
+			StreamSettings: outSS,
 		}, {
 			Protocol: "freedom",
 			Tag:      "direct",

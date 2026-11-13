@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- xray-vless masquerade modes, ported from the Infra Glacier/Floe pattern
+  (`hosts.params.mode`): `tls` (default, Floe) keeps xray on the public
+  pool port with real TLS plus an optional `fallback host:port` decoy to a
+  real local site; `nginx` (Glacier) moves xray to `127.0.0.1` only with
+  plain VLESS over WebSocket (`ws_path` masquerade inside the real vhost
+  URL space, `public_port` default 443), TLS terminated by the operator's
+  nginx — the rendered config carries a `proxy_pass` hint for the vhost
+  location. All server inbounds get `sniffing.destOverride
+  ["http","tls","quic"]`; client configs dial the masquerade vhost in
+  nginx mode instead of the pool port. REALITY rejection and BYOK cert
+  placeholders are unchanged; WARP egress, mail-port blocks and DoH DNS
+  from the source pattern are deliberately not ported.
+
 ### Fixed
 - Core API wire format: `store.Host`/`store.Forward` carried no json tags,
   so the daemon emitted Go-default PascalCase (`ID`, `OwnerID`, ...) while
@@ -48,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gen wireguard` renders berg/proxer/client wg-quick configs
   (wireguard or amneziawg, fresh PSK + berg keypair by default), `gen
   xray` renders the berg aggregate, the proxer note and the client
-  dokodemo-door config from a `public:target[:proto]` forwards spec.
+  dokodemo-door config from a `public:target[:proto]` forwards spec
+  (`--mode/--ws-path/--public-port/--fallback` pick the masquerade).
   Enablers: wg keypair/PSK generation moved from reconcile into the
   Tier-0 transport package (`wireguard.GeneratePSK` /
   `GenerateKeypair`), and `config.LoadForRender` exposes the

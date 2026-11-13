@@ -67,6 +67,10 @@ func init() {
 		f.String("sni", "", "xray: TLS SNI (default: endpoint)")
 		f.String("uuid", "", "xray: vless user UUID (default: generate fresh)")
 		f.String("proxer-endpoint", "", "xray: proxer service host berg dials (default: endpoint)")
+		f.String("mode", "", "xray: masquerade mode, tls or nginx (default: tls)")
+		f.String("ws-path", "", "xray: nginx-mode masquerade websocket path (required in nginx mode)")
+		f.Int("public-port", 0, "xray: nginx-mode public vhost TLS port (default: 443)")
+		f.String("fallback", "", "xray: tls-mode fallback dest host:port for non-vless probes (optional)")
 		f.String("forwards", "", "xray: forwards spec public:target[:proto][,...]")
 		genCmd.AddCommand(sub)
 	}
@@ -299,6 +303,18 @@ func runGenXray(cmd *cobra.Command, args []string) error {
 		pe = sni
 	}
 	p["proxer_endpoint"] = pe
+	if mode, _ := f.GetString("mode"); mode != "" {
+		p["mode"] = mode
+	}
+	if wp, _ := f.GetString("ws-path"); wp != "" {
+		p["ws_path"] = wp
+	}
+	if pp, _ := f.GetInt("public-port"); pp != 0 {
+		p["public_port"] = pp
+	}
+	if fb, _ := f.GetString("fallback"); fb != "" {
+		p["fallback"] = fb
+	}
 	h.Params, err = json.Marshal(p)
 	if err != nil {
 		return err

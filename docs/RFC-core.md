@@ -148,6 +148,24 @@ from a core-managed pool (like tunnel IPs):
 | `amneziawg` | 51900–51999/udp | `awg syncconf` | phase 1b; same schema, AWG obfuscation fields in `hosts.params jsonb` |
 | `xray-vless` | 5200–5299/tcp | xray API/grpc | phase 2; host row carries UUID+TLS params; forward = routing rule |
 
+Masquerade modes (`params.mode`, copied from the Infra Glacier/Floe pattern;
+`tls` is the default):
+
+- **`tls`** — xray owns the public pool port with real TLS (BYOK cert files
+  or `{{DYATEL_CERT_PEM}}`/`{{DYATEL_KEY_PEM}}` placeholders); optional
+  `fallback` (`host:port`) routes non-VLESS probes to a real local site
+  (Floe). Inbounds get `sniffing.destOverride ["http","tls","quic"]`.
+- **`nginx`** — xray listens on `127.0.0.1` only, transport VLESS over
+  WebSocket with `security "none"` and a masquerade `ws_path` inside the
+  real vhost URL space; TLS is terminated by the operator's nginx, which
+  `proxy_pass`es the ws path to the loopback port (Glacier). `public_port`
+  (default 443) is the vhost TLS port the consumer dials; cert_file/key_file
+  are rejected in this mode.
+
+REALITY is rejected at params-parse time everywhere (unusable in RU); WARP
+egress, mail-port blocks and DoH DNS from the source pattern are
+deliberately not ported.
+
 Schema impact: `hosts` gains `transport text not null default 'wireguard'`,
 `listen_port int not null unique` (allocated by core, freed on delete),
 and `params jsonb not null default '{}'` for transport-specific knobs.
@@ -197,7 +215,7 @@ way; identical rendered configs, identical transports:
 |---|---|---|---|
 | `wireguard` | `wireguard-tools` | `/etc/wireguard/dyatel.conf` | `wg-quick@dyatel` |
 | `amneziawg` | `amneziawg-tools` | `/etc/amnezia/amneziawg/dyatel.conf` (AWG params from `hosts.params`) | `awg-quick@dyatel` |
-| `xray-vless` | `xray` | `/etc/xray/dyatel.json` (UUID+TLS) | `xray@dyatel` |
+| `xray-vless` | `xray` | `/etc/xray/dyatel.json` (UUID+TLS, masquerade mode) | `xray@dyatel` |
 
 The roles are **thin deployers**: install the package, fetch the
 rendered config (via `dyatelctl` with a PAT, or a template var

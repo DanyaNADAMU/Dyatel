@@ -104,6 +104,44 @@ func TestGenXray(t *testing.T) {
 	}
 }
 
+func TestGenXrayNginxMode(t *testing.T) {
+	out := gen(t, "xray", "--name", "demo", "--sni", "s.example",
+		"--mode", "nginx", "--ws-path", "/api/v1/events",
+		"--public-port", "8443", "--forwards", "15490:5432")
+	for _, want := range []string{
+		"\"listen\": \"127.0.0.1\"",     // server stays loopback-only
+		"\"network\": \"ws\"",           // transport is websocket
+		"\"security\": \"none\"",        // TLS terminated by nginx, not xray
+		"\"path\": \"/api/v1/events\"",  // masquerade ws path
+		"\"port\": 8443",                // client dials the vhost TLS port
+		"\"serverName\": \"s.example\"", // client TLS SNI
+		"\"sniffing\"",                  // destOverride on the server inbound
+		"\"quic\"",
+		"proxy_pass http://127.0.0.1:", // nginx location hint for the operator
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("xray nginx gen missing %q:\n%s", want, out)
+		}
+	}
+	// No TLS material on the server leg: nginx terminates TLS upstream.
+	if strings.Contains(out, "tlsSettings\": {") && strings.Count(out, "\"security\": \"tls\"") == 0 {
+		t.Errorf("unexpected tls on server leg:\n%s", out)
+	}
+}
+
+func TestGenXrayNginxModeRequiresWSPath(t *testing.T) {
+	resetGenFlags(t)
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"gen", "xray", "--name", "d", "--sni", "s.example", "--mode", "nginx"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Errorf("nginx mode without ws-path should fail")
+	} else if !strings.Contains(err.Error(), "ws_path") && !strings.Contains(buf.String(), "ws_path") {
+		t.Errorf("expected ws_path error, got: %v / %s", err, buf.String())
+	}
+}
+
 func TestGenErrors(t *testing.T) {
 	cases := [][]string{
 		{"wireguard"},

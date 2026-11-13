@@ -341,3 +341,157 @@ func TestRenderersRejectBadParams(t *testing.T) {
 		t.Fatal("RenderProxerConfig must reject params without uuid/proxer_endpoint")
 	}
 }
+
+func TestParseXrayParamsModes(t *testing.T) {
+	base := `"sni":"acme.example.com","uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","proxer_endpoint":"198.51.100.7"`
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{"default mode is tls", `{` + base + `}`, ""},
+		{"explicit tls mode", `{` + base + `,"mode":"tls"}`, ""},
+		{"nginx mode with ws path", `{` + base + `,"mode":"nginx","ws_path":"/api/v1/events"}`, ""},
+		{"nginx mode with custom public port", `{` + base + `,"mode":"nginx","ws_path":"/x","public_port":8443}`, ""},
+		{"tls mode with fallback", `{` + base + `,"fallback":"127.0.0.1:8080"}`, ""},
+		{"unknown mode", `{` + base + `,"mode":"warp"}`, `mode must be "tls" or "nginx"`},
+		{"nginx without ws path", `{` + base + `,"mode":"nginx"}`, "ws_path is required in nginx mode"},
+		{"nginx relative ws path", `{` + base + `,"mode":"nginx","ws_path":"api/events"}`, "ws_path must be an absolute path"},
+		{"nginx ws path with whitespace", `{` + base + `,"mode":"nginx","ws_path":"/a b"}`, "ws_path must be an absolute path"},
+		{"nginx with cert_file", `{` + base + `,"mode":"nginx","ws_path":"/x","cert_file":"/etc/c.pem"}`, "cert_file/key_file are tls-mode only"},
+		{"nginx public port out of range", `{` + base + `,"mode":"nginx","ws_path":"/x","public_port":70000}`, "public_port must be 1-65535"},
+		{"tls with ws path", `{` + base + `,"ws_path":"/x"}`, "ws_path is nginx-mode only"},
+		{"tls with public port", `{` + base + `,"public_port":443}`, "public_port is nginx-mode only"},
+		{"tls fallback without port", `{` + base + `,"fallback":"127.0.0.1"}`, "fallback must be host:port"},
+		{"tls fallback with whitespace", `{` + base + `,"fallback":"127.0.0.1:80 80"}`, "fallback must not contain whitespace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseXrayParams([]byte(tc.raw))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ParseXrayParams(%s): unexpected error: %v", tc.raw, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ParseXrayParams(%s): expected error containing %q, got nil", tc.raw, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ParseXrayParams(%s): error %q does not contain %q", tc.raw, err, tc.wantErr)
+			}
+		})
+	}
+	// nginx mode defaults the public port to the usual vhost TLS port.
+	p, err := ParseXrayParams([]byte(`{` + base + `,"mode":"nginx","ws_path":"/api/v1/events"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != ModeNginx || p.WSPath != "/api/v1/events" || p.PublicPort != 443 {
+		t.Fatalf("nginx params not normalized: %+v", p)
+	}
+}
+
+// Glacier pattern: loopback-only xray with plain VLESS over WS; TLS is
+// terminated by the operator's nginx upstream, so no certs, no tlsSettings
+// and no placeholders in the rendered config.
+func TestRenderServerConfigNginxMode(t *testing.T) {
+	x := New(testCfg())
+	h := testHost(`{"sni":"git.example.com","uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","proxer_endpoint":"198.51.100.7","mode":"nginx","ws_path":"/api/v1/events"}`)
+	out, err := x.RenderServerConfig(h)
+	if err != nil {
+		t.Fatalf("RenderServerConfig: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"listen": "127.0.0.1"`,
+		`"port": 5201`,
+		`"network": "ws"`,
+		`"security": "none"`,
+		`"path": "/api/v1/events"`,
+		`"destOverride": [`,
+		`"quic"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in nginx-mode server config:\n%s", want, out)
+		}
+	}
+	if strings.Contains(s, "tlsSettings") || strings.Contains(s, CertPlaceholder) || strings.Contains(s, KeyPlaceholder) {
+		t.Fatalf("nginx mode must not carry TLS material (nginx terminates TLS upstream):\n%s", out)
+	}
+	if strings.Contains(s, `"listen": "0.0.0.0"`) {
+		t.Fatalf("nginx mode must be loopback-only:\n%s", out)
+	}
+}
+
+// Floe pattern: xray owns the public port with real TLS; the fallback
+// sends non-VLESS probes to a real local site.
+func TestRenderServerConfigTLSFallback(t *testing.T) {
+	x := New(testCfg())
+	h := testHost(`{"sni":"cloud.example.com","uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","proxer_endpoint":"198.51.100.7","fallback":"127.0.0.1:8080"}`)
+	out, err := x.RenderServerConfig(h)
+	if err != nil {
+		t.Fatalf("RenderServerConfig: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"listen": "0.0.0.0"`,
+		`"fallbacks": [`,
+		`"dest": "127.0.0.1:8080"`,
+		`"destOverride": [`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in tls-mode fallback config:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderClientConfigNginxMode(t *testing.T) {
+	x := New(testCfg())
+	h := testHost(`{"sni":"git.example.com","uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","proxer_endpoint":"198.51.100.7","mode":"nginx","ws_path":"/api/v1/events","public_port":8443}`)
+	out, err := x.RenderClientConfig(h, []store.Forward{{
+		ID:         uuid.New(),
+		HostID:     h.ID,
+		PublicPort: 15490,
+		TargetPort: 5432,
+		Proto:      "tcp",
+	}})
+	if err != nil {
+		t.Fatalf("RenderClientConfig: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"address": "git.example.com"`,
+		`"port": 8443`,
+		`"network": "ws"`,
+		`"security": "tls"`,
+		`"serverName": "git.example.com"`,
+		`"path": "/api/v1/events"`,
+		`"address": "198.51.100.7"`, // dokodemo destination stays the proxer service
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in nginx-mode client config:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderClientConfigTLSModeUnchanged(t *testing.T) {
+	x := New(testCfg())
+	out, err := x.RenderClientConfig(testHost(validParams), nil)
+	if err != nil {
+		t.Fatalf("RenderClientConfig: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"address": "dyatel.test.nada.mu"`,
+		`"port": 5201`,
+		`"network": "tcp"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in tls-mode client config:\n%s", want, out)
+		}
+	}
+	if strings.Contains(s, "wsSettings") {
+		t.Fatalf("tls mode must not carry wsSettings:\n%s", out)
+	}
+}
