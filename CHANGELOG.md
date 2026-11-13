@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.1] - 2026-11-13
+
 ### Fixed
 - Gateway role now reconciles UFW route rules: forward rules pointing at
   obsolete client IPs (left over from deployments with different
