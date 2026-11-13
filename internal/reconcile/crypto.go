@@ -1,13 +1,7 @@
 package reconcile
 
-import (
-	"crypto/rand"
-	"encoding/base64"
-	"net"
-)
+import "net"
 
-func randRead(b []byte) (int, error) { return rand.Read(b) }
-
-func base64Encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
-
+// parseCIDR is the one crypto.go helper gen still needs after the wg
+// keypair/PSK generation moved to the transport package (Tier-0 library).
 func parseCIDR(s string) (net.IP, *net.IPNet, error) { return net.ParseCIDR(s) }

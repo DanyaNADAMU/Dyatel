@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   item for the core fallback admin points at the same origin.
 
 ### Added
+- `dyatelctl gen`: offline config rendering, making Tier 0 literal — a
+  proxer deploys themselves with just the ansible playbook plus `gen`,
+  no daemon, no PG, no Authentik (those stay a Tier-1 convenience).
+  `gen wireguard` renders berg/proxer/client wg-quick configs
+  (wireguard or amneziawg, fresh PSK + berg keypair by default), `gen
+  xray` renders the berg aggregate, the proxer note and the client
+  dokodemo-door config from a `public:target[:proto]` forwards spec.
+  Enablers: wg keypair/PSK generation moved from reconcile into the
+  Tier-0 transport package (`wireguard.GeneratePSK` /
+  `GenerateKeypair`), and `config.LoadForRender` exposes the
+  env-driven defaults (nets, port pools, endpoint) without the DSN
+  requirement — the CLI never imports reconcile internals, only pure
+  transport renderers.
 - xray-vless berg bring-up: the reconciler now renders one aggregate
   xray config per node (`RenderServerConfigMulti`, one vless inbound per
   host, single freedom outbound), compares it byte-wise to the on-disk

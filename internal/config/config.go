@@ -73,6 +73,14 @@ func envInt(key string, def int) int {
 }
 
 func Load() (*Config, error) {
+	c := load()
+	if c.DatabaseDSN == "" {
+		return nil, fmt.Errorf("DYATEL_DB_DSN is required")
+	}
+	return c, nil
+}
+
+func load() *Config {
 	c := &Config{
 		Bind:                 env("DYATEL_BIND", "127.0.0.1:8100"),
 		DatabaseDSN:          env("DYATEL_DB_DSN", ""),
@@ -101,8 +109,12 @@ func Load() (*Config, error) {
 		UFWBinary:            env("DYATEL_UFW_PATH", "/usr/sbin/ufw"),
 		DNSZone:              env("DYATEL_DNS_ZONE", "test.nada.mu"),
 	}
-	if c.DatabaseDSN == "" {
-		return nil, fmt.Errorf("DYATEL_DB_DSN is required")
-	}
-	return c, nil
+	return c
+}
+
+// LoadForRender returns the same env-driven settings but without the DSN
+// requirement: offline rendering (dyatelctl gen) needs the network/port
+// defaults, never the database. Tier 0 = playbook + pure renderers.
+func LoadForRender() *Config {
+	return load()
 }

@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
 	"nadamu/dyatel/internal/config"
 	"nadamu/dyatel/internal/store"
 	"nadamu/dyatel/internal/transport/wireguard"
@@ -65,11 +64,11 @@ func (r *Reconciler) Trigger() {
 // PrepareHost generates the core-side material (PSK + berg keypair) and
 // persists the host. BYOK (RFC §3.4b): user private keys never touch the core.
 func (r *Reconciler) PrepareHost(ctx context.Context, h *store.Host) error {
-	psk, err := genPSK()
+	psk, err := wireguard.GeneratePSK()
 	if err != nil {
 		return err
 	}
-	gwPriv, gwPub, err := genKeypair()
+	gwPriv, gwPub, err := wireguard.GenerateKeypair()
 	if err != nil {
 		return err
 	}
@@ -491,36 +490,6 @@ func (r *Reconciler) lastErr(err error) {
 	s := r.last["_error"]
 	_ = s
 	r.last["_error"] = HostStatus{LastError: err.Error()}
-}
-
-// genPSK returns a base64 32-byte preshared key.
-func genPSK() (string, error) {
-	b := make([]byte, 32)
-	if _, err := randRead(b); err != nil {
-		return "", err
-	}
-	return base64Encode(b), nil
-}
-
-// genKeypair returns (base64 priv, base64 pub) for the berg-side wg interface.
-func genKeypair() (string, string, error) {
-	var priv [32]byte
-	if _, err := randRead(priv[:]); err != nil {
-		return "", "", err
-	}
-	// wg clamps before deriving the public key, like wireguard-tools does.
-	priv[0] &= 248
-	priv[31] &= 7
-	priv[31] |= 64
-	pub, err := curve25519.X25519(priv[:], curve25519.Basepoint)
-	if err != nil {
-		return "", "", err
-	}
-	// wg clamps (b[31] = (b[31] & 127) | 64) — the stored private key must
-	// stay bit-identical to the one the public key was derived from.
-	priv[31] &= 127
-	priv[31] |= 64
-	return base64Encode(priv[:]), base64Encode(pub[:]), nil
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
