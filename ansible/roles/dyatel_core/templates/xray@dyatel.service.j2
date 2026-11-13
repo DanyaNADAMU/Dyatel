@@ -1,0 +1,23 @@
+[Unit]
+Description=Dyatel xray-vless TLS masquerade listener ({{ dyatel_core_xray_config_path }})
+Documentation=https://nada.mu
+After=network-online.target dyatel-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Aggregate config is rendered by dyatel-core at runtime (BYOK: the core
+# never holds TLS private keys, so cert/key content is substituted on the
+# berg by the operator). Ansible only enables the unit; the core starts
+# and stops it as xray-vless hosts come and go.
+ExecStart={{ dyatel_core_xray_binary }} run -config {{ dyatel_core_xray_config_path }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelModules=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

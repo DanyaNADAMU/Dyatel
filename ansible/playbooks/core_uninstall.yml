@@ -1,0 +1,11 @@
+---
+# ==============================================================================
+# Playbook: Teardown Dyatel Core
+# ==============================================================================
+- name: Teardown Dyatel Core control plane
+  hosts: core
+  become: true
+  roles:
+    - role: dyatel_core
+      vars:
+        dyatel_core_state: "absent"

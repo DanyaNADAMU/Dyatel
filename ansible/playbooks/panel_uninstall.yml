@@ -1,0 +1,11 @@
+---
+# ==============================================================================
+# Playbook: Teardown Dyatel Panel
+# ==============================================================================
+- name: Teardown Dyatel web panel
+  hosts: core
+  become: true
+  roles:
+    - role: dyatel_panel
+      vars:
+        dyatel_panel_state: "absent"

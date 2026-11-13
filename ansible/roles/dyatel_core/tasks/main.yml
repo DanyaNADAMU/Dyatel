@@ -1,0 +1,8 @@
+---
+- name: Run dyatel_core installation tasks
+  ansible.builtin.include_tasks: install.yml
+  when: dyatel_core_state == "present"
+
+- name: Run dyatel_core uninstallation tasks
+  ansible.builtin.include_tasks: uninstall.yml
+  when: dyatel_core_state == "absent"

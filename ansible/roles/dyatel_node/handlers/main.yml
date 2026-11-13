@@ -16,6 +16,8 @@
     state: restarted
     enabled: true
     daemon_reload: true
+  # No static interface to restart on core (reconcile-managed) nodes.
+  when: dyatel_node_awg_manage_interface | default(true)
 
 - name: Restart dyatel mock server
   ansible.builtin.systemd:

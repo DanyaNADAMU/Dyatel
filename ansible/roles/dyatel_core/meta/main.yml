@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  author: Danya
+  description: Dyatel core control plane (API + reconcile loop) on a gateway host
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: ArchLinux
+      versions: [all]
+    - name: Debian
+      versions: [bookworm, trixie]
+
+# No role dependencies. Public TLS termination for api.<domain> is the
+# Infra nginx/acme_sh stack's job (berg L4 multiplexes 443 to this VM);
+# this role ships the local listener (127.0.0.1:8100) only.
+dependencies: []

@@ -1,0 +1,111 @@
+---
+# dyatel_core role defaults. Non-sensitive settings live here; secrets are
+# bound to vault variables (Infra §6 two-layer architecture) with safe
+# fallbacks for local testing.
+
+# Lifecycle: present | absent (Infra §3 symmetric state parameter)
+dyatel_core_state: "present"
+
+# System user/group running dyatel-core
+dyatel_core_user: "dyatel"
+dyatel_core_group: "dyatel"
+
+# Paths
+dyatel_core_binary: "/usr/local/bin/dyatel-core"
+# CLI sibling binary: same build-and-ship path as the core (no release
+# artifacts yet); installed on the daemon host for break-glass operators.
+dyatel_core_ctl_binary: "/usr/local/bin/dyatelctl"
+dyatel_core_config_dir: "/etc/dyatel"
+dyatel_core_env_file: "{{ dyatel_core_config_dir }}/core.env"
+
+# Source: local Dyatel checkout on the control host (built and shipped,
+# utka-style); no release artifacts exist yet (RFC §9: core binary install
+# is Ansible's job).
+dyatel_core_local_src: "{{ playbook_dir }}/../.."
+
+# Network (RFC §4a topology)
+dyatel_core_bind: "127.0.0.1:8100"
+dyatel_core_public_endpoint: "api.{{ dyatel_core_base_domain | default('test.nada.mu') }}"
+dyatel_core_tunnel_v4: "10.13.36.0/24"
+dyatel_core_tunnel_v6: "fd00:36::/64"
+dyatel_core_core_listen_ip: "10.13.36.1"
+
+# Per-host port pools (RFC §4a: one listen port per host, allocated from pool)
+dyatel_core_wg_ports_min: 51820
+dyatel_core_wg_ports_max: 51899
+dyatel_core_awg_ports_min: 51900
+dyatel_core_awg_ports_max: 51999
+dyatel_core_xray_ports_min: 5200
+dyatel_core_xray_ports_max: 5299
+
+# Daemon node identity (RFC §4 multi-node): this daemon reconciles only
+# hosts where hosts.node matches. 'test' = staging node, 'berg' = prod
+# proxer node; both share one PG on test over incusbr0.
+dyatel_core_node: "test"
+
+# Reconcile loop period (seconds)
+dyatel_core_reconcile_every: 15
+
+# Auth (RFC §3.2): Authentik OIDC introspection + break-glass admin
+dyatel_core_oidc_introspection_url: >-
+  {{ dyatel_core_oidc_introspection_url_override
+     | default('https://auth.' ~ (dyatel_core_base_domain | default('test.nada.mu'))
+               ~ '/application/o/introspect/') }}
+dyatel_core_oidc_client_id: "{{ vault_dyatel_oidc_client_id | default('') }}"
+dyatel_core_oidc_client_secret: "{{ vault_dyatel_oidc_client_secret | default('') }}"
+dyatel_core_oidc_admin_group: "Dyatel Admins"
+# Break-glass Basic admin (argon2id PHC hash; leave empty to disable)
+dyatel_core_fallback_admin_user: "{{ vault_dyatel_fallback_admin_user | default('') }}"
+dyatel_core_fallback_admin_hash: "{{ vault_dyatel_fallback_admin_hash | default('') }}"
+
+# Host-side WireGuard/UFW paths (core-owned; role only ensures dirs exist)
+dyatel_core_wg_config_path: "/etc/wireguard/wg-dyatel.conf"
+dyatel_core_wg_ifname: "wg-dyatel"
+dyatel_core_ufw_path: "/usr/sbin/ufw"
+
+# Database (RFC §9: dyatel db + role, one-shot; postgres runs locally on
+# the target in staging, on glacier in production)
+dyatel_core_db_name: "dyatel"
+dyatel_core_db_user: "dyatel"
+dyatel_core_db_password: "{{ vault_dyatel_db_password | default('CHANGE_ME') }}"
+dyatel_core_db_host: "/var/run/postgresql"
+dyatel_core_db_pool_max: 4
+# Remote-node daemons (berg) connect to the shared PG over TCP; the role
+# then must not try to provision a local cluster on the target.
+dyatel_core_db_manage: true
+
+# Cloudflare (RFC §3.5 dns_records)
+dyatel_core_cloudflare_token: "{{ vault_dyatel_cloudflare_token | default('') }}"
+dyatel_core_dns_zone: "{{ dyatel_core_base_domain | default('nada.mu') }}"
+
+# Packages (RFC §9 table). amneziawg-tools is NOT in Debian 13 repos and
+# AWG transport is Phase 1b anyway; add it via override once needed
+# (e.g. upstream .deb or built from source).
+dyatel_core_packages:
+  - wireguard-tools
+  - python3-psycopg2
+  - acl  # ansible-core needs it to become_user: postgres
+  - unzip  # unarchive needs it for the pinned xray zip release
+
+# Purge packages on uninstall (data/system effects handled below)
+dyatel_core_purge_packages: false
+
+# systemd
+dyatel_core_service_name: "dyatel-core"
+
+# Go toolchain on the control host for the build step
+dyatel_core_go_bin: "go"
+
+# Xray (RFC §3 xray-vless: TLS masquerade only, no Reality). One aggregate
+# config + one systemd instance per node, named distinctly from any other
+# xray on the host (e.g. a personal xray.service): xray@dyatel.
+dyatel_core_xray_binary: "/usr/local/bin/xray"
+dyatel_core_xray_config_path: "/etc/xray/dyatel.json"
+dyatel_core_xray_service_name: "xray@dyatel"
+# Pinned upstream release downloaded only when the binary is absent
+# (idempotent: an existing binary is reused as-is; uninstall never
+# removes it since it may be shared with other instances).
+dyatel_core_xray_version: "26.11.9"
+# Download the pinned release when the binary is absent; false = reuse an
+# already-installed xray and only manage the dyatel instance unit.
+dyatel_core_xray_install: true

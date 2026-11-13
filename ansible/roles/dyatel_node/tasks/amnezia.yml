@@ -32,62 +32,67 @@
     group: root
     mode: "0700"
 
-- name: Check if AmneziaWG node private key exists
-  ansible.builtin.stat:
-    path: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
-  register: dyatel_node_awg_key_stat
+# Interface management is opt-out: a core node owns its tunnels via the
+# reconcile loop and only needs the userspace toolkit shipped above.
+- name: Manage the static AmneziaWG interface (consumer nodes)
+  when: dyatel_node_awg_manage_interface | default(true)
+  block:
+    - name: Check if AmneziaWG node private key exists
+      ansible.builtin.stat:
+        path: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
+      register: dyatel_node_awg_key_stat
 
-- name: Generate AmneziaWG node private key if missing
-  ansible.builtin.command:
-    cmd: /usr/local/bin/awg genkey
-  register: dyatel_node_awg_privkey_gen
-  when: not dyatel_node_awg_key_stat.stat.exists
-  changed_when: true
+    - name: Generate AmneziaWG node private key if missing
+      ansible.builtin.command:
+        cmd: /usr/local/bin/awg genkey
+      register: dyatel_node_awg_privkey_gen
+      when: not dyatel_node_awg_key_stat.stat.exists
+      changed_when: true
 
-- name: Save AmneziaWG node private key
-  ansible.builtin.copy:
-    content: "{{ dyatel_node_awg_privkey_gen.stdout }}\n"
-    dest: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
-    owner: root
-    group: root
-    mode: "0600"
-  when: not dyatel_node_awg_key_stat.stat.exists
+    - name: Save AmneziaWG node private key
+      ansible.builtin.copy:
+        content: "{{ dyatel_node_awg_privkey_gen.stdout }}\n"
+        dest: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not dyatel_node_awg_key_stat.stat.exists
 
-- name: Read AmneziaWG node private key
-  ansible.builtin.slurp:
-    path: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
-  register: dyatel_node_awg_privkey_slurp
+    - name: Read AmneziaWG node private key
+      ansible.builtin.slurp:
+        path: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.key"
+      register: dyatel_node_awg_privkey_slurp
 
-- name: Set AmneziaWG node private key fact
-  ansible.builtin.set_fact:
-    dyatel_node_awg_private_key: "{{ dyatel_node_awg_privkey_slurp.content | b64decode | trim }}"
+    - name: Set AmneziaWG node private key fact
+      ansible.builtin.set_fact:
+        dyatel_node_awg_private_key: "{{ dyatel_node_awg_privkey_slurp.content | b64decode | trim }}"
 
-- name: Derive AmneziaWG node public key
-  ansible.builtin.command:
-    cmd: /usr/local/bin/awg pubkey
-    stdin: "{{ dyatel_node_awg_private_key }}"
-  register: dyatel_node_awg_pubkey_cmd
-  changed_when: false
+    - name: Derive AmneziaWG node public key
+      ansible.builtin.command:
+        cmd: /usr/local/bin/awg pubkey
+        stdin: "{{ dyatel_node_awg_private_key }}"
+      register: dyatel_node_awg_pubkey_cmd
+      changed_when: false
 
-- name: Set AmneziaWG node public key fact
-  ansible.builtin.set_fact:
-    dyatel_node_awg_public_key: "{{ dyatel_node_awg_pubkey_cmd.stdout | trim }}"
+    - name: Set AmneziaWG node public key fact
+      ansible.builtin.set_fact:
+        dyatel_node_awg_public_key: "{{ dyatel_node_awg_pubkey_cmd.stdout | trim }}"
 
-- name: Deploy AmneziaWG client node interface configuration
-  ansible.builtin.template:
-    src: awg-node.conf.j2
-    dest: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.conf"
-    owner: root
-    group: root
-    mode: "0600"
-  notify: Restart awg node
+    - name: Deploy AmneziaWG client node interface configuration
+      ansible.builtin.template:
+        src: awg-node.conf.j2
+        dest: "/etc/amnezia/amneziawg/{{ dyatel_node_awg_interface }}.conf"
+        owner: root
+        group: root
+        mode: "0600"
+      notify: Restart awg node
 
-- name: Flush handlers before service activation
-  ansible.builtin.meta: flush_handlers
+    - name: Flush handlers before service activation
+      ansible.builtin.meta: flush_handlers
 
-- name: Ensure AmneziaWG client node service is enabled and started
-  ansible.builtin.systemd:
-    name: "awg-quick@{{ dyatel_node_awg_interface }}"
-    state: started
-    enabled: true
-    daemon_reload: true
+    - name: Ensure AmneziaWG client node service is enabled and started
+      ansible.builtin.systemd:
+        name: "awg-quick@{{ dyatel_node_awg_interface }}"
+        state: started
+        enabled: true
+        daemon_reload: true

@@ -1,0 +1,19 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart dyatel-core
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_service_name }}"
+    state: restarted
+
+- name: Reload postgresql
+  ansible.builtin.systemd:
+    name: postgresql
+    state: reloaded
+
+- name: Apply dyatel sysctl  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: false

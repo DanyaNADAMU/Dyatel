@@ -1,0 +1,323 @@
+---
+# dyatel_core install. Ansible owns: packages, sysctl drop-in, user,
+# binary, env file, systemd unit, db+role. Everything else (peers,
+# UFW rules, NAT, DNS) is core's at runtime (RFC §9).
+
+- name: Install dyatel core packages  # [packages]
+  ansible.builtin.apt:
+    name: "{{ dyatel_core_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: [packages]
+
+- name: Ensure dyatel group exists
+  ansible.builtin.group:
+    name: "{{ dyatel_core_group }}"
+    system: true
+    state: present
+  tags: [config]
+
+- name: Ensure dyatel user exists
+  ansible.builtin.user:
+    name: "{{ dyatel_core_user }}"
+    group: "{{ dyatel_core_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+    state: present
+  tags: [config]
+
+- name: Deploy IPv4/IPv6 forwarding sysctl drop-in
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/60-ansible-dyatel.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (role dyatel_core). Tunnel routing (RFC §4a).
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+  notify: Apply dyatel sysctl
+  tags: [config, firewall]
+
+# --- Database (RFC §9: one-shot dyatel db + role) ---
+
+- name: Discover installed PostgreSQL cluster version
+  ansible.builtin.find:
+    paths: /etc/postgresql
+    file_type: directory
+    recurse: false
+  register: dyatel_core_pg_dirs
+  tags: [config, database]
+  when: dyatel_core_db_manage | bool
+
+- name: Set PostgreSQL version fact
+  ansible.builtin.set_fact:
+    dyatel_core_pg_version: >-
+      {{
+        (dyatel_core_pg_dirs.files | map(attribute='path') | map('basename') | sort | last)
+        if (dyatel_core_pg_dirs.files | default([]) | length > 0)
+        else '17'
+      }}
+  tags: [config, database]
+  when: dyatel_core_db_manage | bool
+
+- name: Ensure dyatel PostgreSQL user exists
+  community.postgresql.postgresql_user:
+    name: "{{ dyatel_core_db_user }}"
+    password: "{{ dyatel_core_db_password }}"
+    encrypted: true
+    state: present
+  become: true
+  become_user: postgres
+  tags: [config, database]
+  when: dyatel_core_db_manage | bool
+
+- name: Ensure dyatel PostgreSQL database exists
+  community.postgresql.postgresql_db:
+    name: "{{ dyatel_core_db_name }}"
+    owner: "{{ dyatel_core_db_user }}"
+    encoding: "UTF-8"
+    state: present
+  become: true
+  become_user: postgres
+  tags: [config, database]
+  when: dyatel_core_db_manage | bool
+
+- name: Configure pg_hba.conf client authentication rule for dyatel socket
+  community.postgresql.postgresql_pg_hba:
+    dest: "/etc/postgresql/{{ dyatel_core_pg_version }}/main/pg_hba.conf"
+    contype: local
+    databases: "{{ dyatel_core_db_name }}"
+    users: "{{ dyatel_core_db_user }}"
+    method: scram-sha-256
+    state: present
+  notify: Reload postgresql
+  tags: [config, database]
+  when: dyatel_core_db_manage | bool
+
+- name: Flush handlers to apply database authentication configuration
+  ansible.builtin.meta: flush_handlers
+
+# --- Binary (built on the control host, shipped; no releases yet) ---
+
+- name: Build dyatel-core binary on the control host  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: "{{ dyatel_core_go_bin }} build -trimpath -o /tmp/dyatel-core-build ./cmd/dyatel-core"
+    chdir: "{{ dyatel_core_local_src }}"
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_build_res
+  changed_when: false
+  tags: [build]
+
+- name: Record control-host binary checksum
+  ansible.builtin.stat:
+    path: /tmp/dyatel-core-build
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_local_binary
+  tags: [build]
+
+- name: Check target binary checksum
+  ansible.builtin.stat:
+    path: "{{ dyatel_core_binary }}"
+    checksum_algorithm: sha256
+  register: dyatel_core_target_binary
+  tags: [build]
+
+- name: Copy dyatel-core binary when changed
+  ansible.builtin.copy:
+    src: /tmp/dyatel-core-build
+    dest: "{{ dyatel_core_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: (dyatel_core_target_binary.stat.checksum | default('')) != (dyatel_core_local_binary.stat.checksum | default(''))
+  notify: Restart dyatel-core
+  tags: [build]
+
+# --- dyatelctl CLI (same build-and-ship path as the core) ---
+
+- name: Build dyatelctl binary on the control host  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: "{{ dyatel_core_go_bin }} build -trimpath -o /tmp/dyatelctl-build ./cmd/dyatelctl"
+    chdir: "{{ dyatel_core_local_src }}"
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_ctl_build_res
+  changed_when: false
+  tags: [build]
+
+- name: Record control-host dyatelctl checksum
+  ansible.builtin.stat:
+    path: /tmp/dyatelctl-build
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: dyatel_core_ctl_local_binary
+  tags: [build]
+
+- name: Check target dyatelctl checksum
+  ansible.builtin.stat:
+    path: "{{ dyatel_core_ctl_binary }}"
+    checksum_algorithm: sha256
+  register: dyatel_core_ctl_target_binary
+  tags: [build]
+
+- name: Copy dyatelctl binary when changed
+  ansible.builtin.copy:
+    src: /tmp/dyatelctl-build
+    dest: "{{ dyatel_core_ctl_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: (dyatel_core_ctl_target_binary.stat.checksum | default('')) != (dyatel_core_ctl_local_binary.stat.checksum | default(''))
+  tags: [build]
+
+# --- Xray (RFC §3 xray-vless: one aggregate config per node) ---
+
+- name: Check xray binary presence
+  ansible.builtin.stat:
+    path: "{{ dyatel_core_xray_binary }}"
+  register: dyatel_core_xray_binary_stat
+  tags: [xray]
+
+- name: Fail with a hint when xray binary is missing and download is disabled
+  ansible.builtin.fail:
+    msg: >-
+      xray binary {{ dyatel_core_xray_binary }} not found and
+      dyatel_core_xray_install is false. Install xray or set the override.
+  when:
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+    - not dyatel_core_xray_install | bool
+  tags: [xray]
+
+- name: Download pinned xray release
+  ansible.builtin.get_url:
+    url: "https://github.com/XTLS/Xray-core/releases/download/v{{ dyatel_core_xray_version }}/Xray-linux-64.zip"
+    dest: /tmp/dyatel-xray.zip
+    mode: "0644"
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Create xray unpack directory
+  # unarchive cannot create the dest dir for zip archives itself
+  ansible.builtin.file:
+    path: /tmp/dyatel-xray
+    state: directory
+    mode: "0755"
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Unpack xray binary
+  ansible.builtin.unarchive:
+    src: /tmp/dyatel-xray.zip
+    dest: /tmp/dyatel-xray
+    remote_src: true
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Install xray binary
+  ansible.builtin.copy:
+    src: /tmp/dyatel-xray/xray
+    dest: "{{ dyatel_core_xray_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Remove downloaded xray archive and unpacked directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/dyatel-xray.zip
+    - /tmp/dyatel-xray
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Deploy xray@dyatel systemd unit
+  ansible.builtin.template:
+    src: "xray@dyatel.service.j2"
+    dest: "/etc/systemd/system/{{ dyatel_core_xray_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  tags: [xray, config]
+
+# Enabled but NOT started here: the aggregate config is rendered by
+# dyatel-core at runtime (first pass creates /etc/xray/dyatel.json);
+# starting an instance without it would crash-loop the unit.
+- name: Enable xray@dyatel unit without starting it
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_xray_service_name }}"
+    enabled: true
+  tags: [xray, service]
+
+# --- Configuration and unit ---
+
+- name: Ensure dyatel config directory exists
+  ansible.builtin.file:
+    path: "{{ dyatel_core_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ dyatel_core_group }}"
+    mode: "0750"
+  tags: [config]
+
+- name: Deploy dyatel-core environment file
+  ansible.builtin.template:
+    src: core.env.j2
+    dest: "{{ dyatel_core_env_file }}"
+    owner: root
+    group: "{{ dyatel_core_group }}"
+    mode: "0640"
+  notify: Restart dyatel-core
+  tags: [config]
+
+- name: Ensure /etc/wireguard exists
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [config]
+
+- name: Deploy dyatel-core systemd unit
+  ansible.builtin.template:
+    src: dyatel-core.service.j2
+    dest: /etc/systemd/system/{{ dyatel_core_service_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart dyatel-core
+  tags: [config]
+
+- name: Enable and start dyatel-core service
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_service_name }}"
+    enabled: true
+    state: started
+  tags: [service]
+
+- name: Flush handlers to converge service state after config changes
+  ansible.builtin.meta: flush_handlers

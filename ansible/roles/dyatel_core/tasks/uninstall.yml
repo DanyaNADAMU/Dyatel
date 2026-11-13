@@ -1,0 +1,79 @@
+---
+# dyatel_core uninstall. Symmetric to install.yml (Infra §3): stop and
+# disable the service, remove the unit/env/binary/sysctl drop-in. Does NOT
+# touch runtime state (wg interfaces, UFW chains, DB data) — that is
+# core-managed and cleaned by its own procedures (RFC §8).
+
+- name: Stop and disable dyatel-core service
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_service_name }}"
+    enabled: false
+    state: stopped
+  tags: [service, uninstall]
+
+- name: Remove dyatel-core systemd unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/{{ dyatel_core_service_name }}.service
+    state: absent
+  notify: Reload systemd
+  tags: [config, uninstall]
+
+- name: Remove dyatel-core environment file and config directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ dyatel_core_env_file }}"
+    - "{{ dyatel_core_config_dir }}"
+  tags: [config, uninstall]
+
+- name: Remove dyatel-core binary
+  ansible.builtin.file:
+    path: "{{ dyatel_core_binary }}"
+    state: absent
+  tags: [build, uninstall]
+
+- name: Stop and disable xray@dyatel unit
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_xray_service_name }}"
+    enabled: false
+    state: stopped
+  tags: [xray, service, uninstall]
+
+- name: Remove xray@dyatel unit and aggregate config
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/systemd/system/{{ dyatel_core_xray_service_name }}.service"
+    - "{{ dyatel_core_xray_config_path }}"
+  notify: Reload systemd
+  tags: [xray, config, uninstall]
+
+# The xray binary itself stays: it may be shared with other instances on
+# the host (e.g. a personal xray.service) and is never owned by dyatel.
+
+- name: Remove IPv4/IPv6 forwarding sysctl drop-in
+  ansible.builtin.file:
+    path: /etc/sysctl.d/60-ansible-dyatel.conf
+    state: absent
+  tags: [config, firewall, uninstall]
+
+- name: Remove dyatel system user and group
+  ansible.builtin.user:
+    name: "{{ dyatel_core_user }}"
+    group: "{{ dyatel_core_group }}"
+    system: true
+    state: absent
+  tags: [config, uninstall]
+
+- name: Purge dyatel core packages when requested
+  ansible.builtin.apt:
+    name: "{{ dyatel_core_packages }}"
+    state: absent
+    purge: true
+  when: dyatel_core_purge_packages | bool
+  tags: [packages, uninstall]
+
+- name: Flush handlers after removal
+  ansible.builtin.meta: flush_handlers
