@@ -103,9 +103,9 @@ CLI sends `Authorization: Bearer dyatel_…`.
 | name | text not null unique | `[a-z0-9-]{2,32}`, used in DNS labels |
 | owner_id | uuid not null references users | who runs the server |
 | consumer_id | uuid not null references users, ≠ owner_id | who consumes the tunnel |
-| wg_public_key | text not null | peer key |
-| wg_preshared_key | text not null | generated at insert |
-| gw_private_key | text not null | berg-side keypair for this host |
+| wg_public_key | text not null | peer key — **supplied by the owner (BYOK), never core-generated** |
+| wg_preshared_key | text not null | generated at insert (core; shared secret of the pair) |
+| gw_private_key | text not null | berg-side keypair for this host, core-generated |
 | gw_public_key | text not null | handed to the host |
 | tunnel_ipv4 | inet not null unique | `10.13.36.x/32` |
 | tunnel_ipv6 | inet not null unique | `fd00:36::x/128` |
@@ -155,14 +155,56 @@ Each transport is a Go interface in core:
 
 ```go
 type Transport interface {
-    RenderHostConfig(h Host) ([]byte, error)   // client-side conf
-    ApplyDesired(hosts []Host) error           // berg-side apply
-    Drift(hosts []Host) ([]Diff, error)        // parse live state
+    RenderProxerConfig(h Host) ([]byte, error)  // owner-side conf
+    RenderClientConfig(h Host) ([]byte, error)  // consumer-side conf
+    ApplyDesired(hosts []Host) error            // berg-side apply
+    Drift(hosts []Host) ([]Diff, error)          // parse live state
 }
 ```
 
 Phasing: WG ships in phase 1, AWG right after (it is a wg fork —
 renderer differs, model identical), Xray is a later phase.
+
+### 3.4b key custody (BYOK)
+
+**The core never generates or sees a user-side private key.**
+The owner (`проксер`) and the consumer (`клиент`) each generate
+their own keypair locally (`dyatelctl genkeys`, or
+`wg genkey` / `awg genkey` / xray `x25519` by hand) and submit
+only public keys. What the core does generate and store:
+- the **PSK** (it is a shared secret of the pair anyway);
+- the **berg-side keypair** (`gw_*` columns) — the core operates
+  berg's tunnel interface, so its private key is the core's own,
+  not a user secret.
+Config rendering works on **public material only**: the core's
+`GET .../config` returns a template with a `{{private_key}}`
+placeholder; `dyatelctl` (or the Ansible role) fills it from the
+locally generated key. A hand-rolled setup does the same with
+`wg genkey`. The core could not leak a user private key because
+it never had one.
+
+### 3.4c bring-up paths (manual or Ansible, per side)
+
+Both roles (проксер and клиент) can bring up their side either
+way; identical rendered configs, identical transports:
+
+| side | manual | Ansible role (`ansible/roles/…`) |
+|---|---|---|
+| proxer (owner) | `dyatelctl genkeys` → `POST /hosts` → `dyatelctl config proxer` → `wg-quick up` / `awg-quick up` / `xray -c` | `dyatel_proxer` |
+| client (consumer) | `dyatelctl genkeys` → `dyatelctl config client` → same commands | `dyatel_client` |
+
+| transport | package | config artifact | systemd unit |
+|---|---|---|---|
+| `wireguard` | `wireguard-tools` | `/etc/wireguard/dyatel.conf` | `wg-quick@dyatel` |
+| `amneziawg` | `amneziawg-tools` | `/etc/amnezia/amneziawg/dyatel.conf` (AWG params from `hosts.params`) | `awg-quick@dyatel` |
+| `xray-vless` | `xray` | `/etc/xray/dyatel.json` (UUID+TLS) | `xray@dyatel` |
+
+The roles are **thin deployers**: install the package, fetch the
+rendered config (via `dyatelctl` with a PAT, or a template var
+containing the rendered config), drop it at the path above, enable
+the unit. Zero provisioning logic — rendering is always the
+core's job; roles only deploy. This keeps the same matrix for
+all three transports and both sides.
 
 ### 3.5 dns_records
 
@@ -203,7 +245,7 @@ never needed for the happy path. Nobody else sees anything.
 
 **How roles are acquired** (no self-service consumership):
 - **owner** — self-service: `POST /hosts` with a WG public key
-  (or have core generate the pair). You own what you created.
+  (generated locally, §3.4b). You own what you created.
 - **consumer** — invitation only: the owner names another Authentik
   user as consumer at host creation (or later via `PATCH`). The
   named user becomes consumer of *that host*, nothing more.
@@ -216,25 +258,26 @@ never needed for the happy path. Nobody else sees anything.
 
 `POST /hosts` (owner action) triggers, in one transaction:
 
-1. **Key generation** (transport plugin, §3.4a): for `wireguard` —
-   a host keypair + PSK + a dedicated berg-side keypair. The host
-   private key is returned **once** in the response body, stored
-   encrypted-at-rest; everything else is public keys.
+1. **Keys** (§3.4b BYOK): the owner submits their **public** key
+   (generated locally); the core generates the PSK and the
+   berg-side keypair. No user private key ever reaches the core.
 2. **Allocation from core-owned pools** (config bounds, tracked in
    the `hosts` table, freed on delete):
    - `listen_port` — one UDP port on berg per host (per-host
      ports), e.g. 51820–51899;
    - `tunnel_ipv4` / `tunnel_ipv6` — one /32 and one /128 from the
      tunnel subnets.
-3. **Render** the host-side wg-quick config (see §5 example).
+3. **Render** both side configs (proxer + client, §3.4a) — public
+   material only, private-key placeholder included.
 4. Desired state is committed; the **reconcile loop** applies it
    within one tick: adds the `[Peer]` to berg's `wg-dyatel.conf`
    (`wg syncconf` — no bounce), opens `listen_port` in UFW with a
    `Dyatel host=<name>` comment.
 
-The owner's remaining work: save the returned config as
-`/etc/wireguard/dyatel.conf` and `wg-quick up dyatel`. No manual
-`wg genkey`, no `wg set`, no Ansible in the data path.
+The owner's remaining work: §3.4c — manual
+(`genkeys` → `config proxer` → `wg-quick up`) or the
+`dyatel_proxer` Ansible role. Either way no user private key
+touches the core, and no transport logic lives outside it.
 
 ## 5. API (REST, JSON, versioned under `/api/v1`)
 
