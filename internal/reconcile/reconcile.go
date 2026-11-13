@@ -116,11 +116,11 @@ func (r *Reconciler) pass(ctx context.Context) {
 		r.lastErr(fmt.Errorf("load hosts: %w", err))
 		return
 	}
-	seen := map[string]bool{}
+	seen := map[string]bool{}      // live ifaces
+	seenNames := map[string]bool{} // live host names (ufw comment key)
 	statuses := map[string]HostStatus{}
 	for _, h := range hosts {
 		ifname := wireguard.InterfaceName(h)
-		seen[ifname] = true
 		st := HostStatus{Name: h.Name, Interface: ifname, State: h.State,
 			ListenPort: h.ListenPort, Transport: h.Transport, Endpoints: map[string]Endpoint{}}
 		cfg, err := r.wg.RenderGWConfig(h)
@@ -129,13 +129,15 @@ func (r *Reconciler) pass(ctx context.Context) {
 			statuses[ifname] = st
 			continue
 		}
-		if cfg == nil { // suspended
+		if cfg == nil { // suspended: teardown iface, forwards pruned as orphan
 			if out, err := run(ctx, "wg", "show", ifname); err == nil && out != "" {
 				_, _ = run(ctx, "ip", "link", "delete", ifname) // teardown suspended
 			}
 			statuses[ifname] = st
 			continue
 		}
+		seen[ifname] = true
+		seenNames[h.Name] = true
 		path := filepath.Join(filepath.Dir(r.cfg.WGConfigPath), ifname+".conf")
 		if err := writeFileAtomic(path, cfg, 0600); err != nil {
 			st.LastError = err.Error()
@@ -167,9 +169,61 @@ func (r *Reconciler) pass(ctx context.Context) {
 		}
 		statuses[ifname] = st
 	}
+	r.pruneOrphans(ctx, seen, seenNames)
 	r.mu.Lock()
 	r.last, r.lastAt = statuses, time.Now()
 	r.mu.Unlock()
+}
+
+// pruneOrphans removes NAT chains and UFW rules of hosts that no longer
+// exist (or are suspended): iptables -S lists every DYATEL-<ifname> chain,
+// ufw status lists every "Dyatel host=<name>" rule comment.
+func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, seenNames map[string]bool) {
+	// orphan wgd-* interfaces (host deleted): bring the list down
+	if out, err := run(ctx, "ip", "-o", "link", "show", "type", "wireguard"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || !strings.HasPrefix(fields[1], "wgd-") {
+				continue
+			}
+			iface := strings.TrimSuffix(fields[1], ":")
+			if !seen[iface] {
+				_, _ = run(ctx, "ip", "link", "delete", iface)
+			}
+		}
+	}
+	if out, err := run(ctx, "iptables", "-t", "nat", "-S"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.HasPrefix(line, "-N DYATEL-") {
+				continue
+			}
+			chain := strings.TrimPrefix(line, "-N ")
+			if seen[strings.TrimPrefix(chain, "DYATEL-")] {
+				continue
+			}
+			for { // drop all jumps to it, then the chain
+				if _, err := run(ctx, "iptables", "-t", "nat", "-D", "PREROUTING", "-j", chain); err != nil {
+					break
+				}
+			}
+			_, _ = run(ctx, "iptables", "-t", "nat", "-F", chain)
+			_, _ = run(ctx, "iptables", "-t", "nat", "-X", chain)
+		}
+	}
+	if out, err := run(ctx, r.cfg.UFWBinary, "status"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			const mark = "# Dyatel host="
+			i := strings.Index(line, mark)
+			if i < 0 {
+				continue
+			}
+			fields := strings.Fields(line[:i])
+			if len(fields) == 0 || seenNames[strings.TrimSpace(line[i+len(mark):])] {
+				continue
+			}
+			_, _ = run(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
+		}
+	}
 }
 
 func (r *Reconciler) Status(ctx context.Context) map[string]any {
@@ -203,20 +257,44 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	// for established flows — conntrack survives the same-rule rewrite)
 	_, _ = run(ctx, "iptables", "-t", "nat", "-N", natChain)
 	_, _ = run(ctx, "iptables", "-t", "nat", "-F", natChain)
+	want := map[string]bool{} // "port/proto" keys this host must expose
 	for _, f := range fwds {
-		_, _ = run(ctx, r.cfg.UFWBinary, "allow", fmt.Sprintf("%d/%s", f.PublicPort, f.Proto),
-			"comment", "'Dyatel host="+h.Name+"'")
+		key := fmt.Sprintf("%d/%s", f.PublicPort, f.Proto)
+		want[key] = true
+		// `ufw allow` skips existing rules: safe to re-add every pass.
+		// no shell => no quoting; ufw rejects comment args
+		// containing literal quotes ("Invalid syntax")
+		_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+			"comment", "Dyatel host="+h.Name)
 		_, _ = run(ctx, "iptables", "-t", "nat", "-A", natChain,
 			"-p", f.Proto, "--dport", fmt.Sprint(f.PublicPort),
 			"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", tv, f.TargetPort))
 	}
-	// jump from PREROUTING (idempotent via -C check)
-	if out, _ := run(ctx, "iptables", "-t", "nat", "-S", natChain); out != "" {
-		chk, _ := run(ctx, "bash", "-c",
-			fmt.Sprintf("iptables -t nat -C PREROUTING -j %s 2>/dev/null", natChain))
-		if chk == "" {
-			_, _ = run(ctx, "iptables", "-t", "nat", "-I", "PREROUTING", "-j", natChain)
+	// drop stale ufw rules this host no longer wants (deleted forwards)
+	if out, _ := run(ctx, r.cfg.UFWBinary, "status"); out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			if !strings.Contains(line, "# Dyatel host="+h.Name+"") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) == 0 || want[fields[0]] {
+				continue
+			}
+			_, _ = run(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
 		}
+	}
+	// exactly one jump from PREROUTING: `iptables -C` reports via exit
+	// status only (stdout is empty), so err — not output — is the signal.
+	for {
+		if _, err := run(ctx, "iptables", "-t", "nat", "-C", "PREROUTING", "-j", natChain); err != nil {
+			break // no (more) jumps
+		}
+		if _, err := run(ctx, "iptables", "-t", "nat", "-D", "PREROUTING", "-j", natChain); err != nil {
+			break
+		}
+	}
+	if _, err := run(ctx, "iptables", "-t", "nat", "-C", "PREROUTING", "-j", natChain); err != nil {
+		_, _ = run(ctx, "iptables", "-t", "nat", "-I", "PREROUTING", "-j", natChain)
 	}
 }
 
