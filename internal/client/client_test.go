@@ -15,16 +15,17 @@ import (
 // []byte Params field arrives base64-encoded. Any drift in the daemon or in
 // the client structs shows up right here.
 
-const cannedHost = `{"ID":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","Name":"mc","Node":"berg",` +
-	`"OwnerID":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","ConsumerID":"6ba7b812-9dad-11d1-80b4-00c04fd430c8",` +
-	`"WGPublicKey":"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=","WGPreSharedKey":"","GWPrivateKey":"",` +
-	`"GWPublicKey":"R0dQVUJL","TunnelIPv4":"10.13.36.2/32","TunnelIPv6":"fd00:36::2/128",` +
-	`"ConsumerWGPublicKey":null,"ConsumerTunnelIPv4":null,"ConsumerTunnelIPv6":null,"Endpoint":null,` +
-	`"Transport":"amneziawg","ListenPort":51901,"Params":"eyJqYyI6NH0=","Keepalive":25,"State":"active"}`
+// Wire fixtures pin the daemon's canonical snake_case json contract.
+const cannedHost = `{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","name":"mc","node":"berg",` +
+	`"owner_id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","consumer_id":"6ba7b812-9dad-11d1-80b4-00c04fd430c8",` +
+	`"wg_public_key":"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY=","wg_pre_shared_key":"","gw_private_key":"",` +
+	`"gw_public_key":"R0dQVUJL","tunnel_ipv4":"10.13.36.2/32","tunnel_ipv6":"fd00:36::2/128",` +
+	`"consumer_wg_public_key":null,"consumer_tunnel_ipv4":null,"consumer_tunnel_ipv6":null,"endpoint":null,` +
+	`"transport":"amneziawg","listen_port":51901,"params":"eyJqYyI6NH0=","keepalive":25,"state":"active"}`
 
-const cannedForward = `{"ID":"6ba7b814-9dad-11d1-80b4-00c04fd430c8",` +
-	`"HostID":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","PublicPort":25565,"TargetPort":25565,` +
-	`"Proto":"tcp","Label":"minecraft"}`
+const cannedForward = `{"id":"6ba7b814-9dad-11d1-80b4-00c04fd430c8",` +
+	`"host_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","public_port":25565,"target_port":25565,` +
+	`"proto":"tcp","label":"minecraft"}`
 
 const cannedMe = `{"id":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","sub":"owner@example.test",` +
 	`"name":"Owner","is_admin":true,"auth":"pat"}`

@@ -44,8 +44,10 @@ dyatel_panel_ssl_key_file: "/etc/ssl/acme/{{ dyatel_panel_base_domain }}/key.pem
 
 # OIDC (baked into the SPA bundle at build time; SPAs are public
 # clients, so the client_id is not a secret in this context — the
-# confidential secret stays server-side in dyatel_core for introspection)
-dyatel_panel_oidc_authority: "https://auth.{{ dyatel_panel_base_domain }}"
+# confidential secret stays server-side in dyatel_core for introspection).
+# Authentik runs per-provider issuer mode, so discovery lives at
+# /application/o/<client slug>/ — not at the bare authority root.
+dyatel_panel_oidc_authority: "https://auth.{{ dyatel_panel_base_domain }}/application/o/dyatel/"
 dyatel_panel_oidc_client_id: "{{ vault_dyatel_oidc_client_id | default('') }}"
 
 # Build tooling on the control host

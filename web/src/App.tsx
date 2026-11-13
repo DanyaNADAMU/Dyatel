@@ -15,25 +15,29 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      // Returning from Authentik: complete the code flow, keep the access
-      // token in sessionStorage (tab-lifetime only).
-      if (location.search.includes("code=") || location.hash.includes("code=")) {
-        const u = await complete();
-        history.replaceState(null, "", location.pathname);
-        if (u?.access_token) {
-          const c: Credential = { auth: "oidc", token: u.access_token };
-          setCred(c);
-          setCredState(c);
+      try {
+        // Returning from Authentik: complete the code flow, keep the access
+        // token in sessionStorage (tab-lifetime only).
+        if (location.search.includes("code=") || location.hash.includes("code=")) {
+          const u = await complete();
+          history.replaceState(null, "", location.pathname);
+          if (u?.access_token) {
+            const c: Credential = { auth: "oidc", token: u.access_token };
+            setCred(c);
+            setCredState(c);
+          }
+        } else {
+          const u = await mgr.getUser();
+          if (u && !u.expired && u.access_token) {
+            const c: Credential = { auth: "oidc", token: u.access_token };
+            setCred(c);
+            setCredState(c);
+          }
         }
-      } else {
-        const u = await mgr.getUser();
-        if (u && !u.expired && u.access_token) {
-          const c: Credential = { auth: "oidc", token: u.access_token };
-          setCred(c);
-          setCredState(c);
-        }
+      } finally {
+        // A failed callback must still show the login screen, not hang here.
+        setBusy(false);
       }
-      setBusy(false);
     })();
   }, []);
 
@@ -47,7 +51,16 @@ export default function App() {
   };
 
   if (busy) return <Shell>Loading…</Shell>;
-  if (!cred) return <Login onOidc={() => void signin()} onBasic={(c) => { setCred(c); setCredState(c); }} />;
+  if (!cred)
+    return (
+      <Login
+        onOidc={signin}
+        onBasic={(c) => {
+          setCred(c);
+          setCredState(c);
+        }}
+      />
+    );
 
   return <Panel cred={cred} onSignout={onSignout} />;
 }
@@ -56,12 +69,23 @@ function Login({
   onOidc,
   onBasic,
 }: {
-  onOidc: () => void;
+  onOidc: () => Promise<void>;
   onBasic: (c: Credential) => void;
 }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [err, setErr] = useState<string | null>(null);
+
+  const tryOidc = async () => {
+    // Surface redirect failures (bad authority/discovery) instead of dying
+    // silently — a swallowed rejection reads as "the button does nothing".
+    setErr(null);
+    try {
+      await onOidc();
+    } catch (e) {
+      setErr(`Authentik sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const tryBasic = async () => {
     // Verify against /me before storing anything: a wrong break-glass
@@ -87,10 +111,11 @@ function Login({
         </div>
         <button
           className="w-full rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-4 py-2.5 font-medium hover:opacity-90"
-          onClick={onOidc}
+          onClick={() => void tryOidc()}
         >
           Sign in with Authentik
         </button>
+        {err && <p className="text-xs text-red-600">{err}</p>}
         <details className="text-sm">
           <summary className="opacity-60 cursor-pointer select-none">
             Break-glass admin access

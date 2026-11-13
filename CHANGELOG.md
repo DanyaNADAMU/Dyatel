@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Core API wire format: `store.Host`/`store.Forward` carried no json tags,
+  so the daemon emitted Go-default PascalCase (`ID`, `OwnerID`, ...) while
+  the panel CLI expected snake_case — every host id decoded as `undefined`
+  and follow-up calls failed with `bad id`. Added canonical snake_case tags
+  (`json:"-"` on the private/PSK material so it can never leak onto the
+  wire) and updated the CLI wire structs and fixtures to match.
+- Panel Authentik sign-in button did nothing: `issuer_mode: per_provider`
+  means discovery lives at `/application/o/dyatel/.well-known/...`, not at
+  the bare authority, so the baked `https://auth.<domain>` root returned an
+  HTML page, discovery parsing rejected, and the swallowed rejection looked
+  like a dead button. Authority now points at the per-provider issuer path,
+  and sign-in/callback failures surface in the login UI instead of being
+  dropped.
+
 ### Added
 - Web panel (`web/`): React 18 + Vite + strict TypeScript SPA served as
   static assets by nginx, talking to the core over the same-origin

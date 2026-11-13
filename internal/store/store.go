@@ -33,36 +33,39 @@ type User struct {
 	IsAdmin      bool
 }
 
+// The daemon serializes Host/Forward directly, so these json tags ARE the
+// public /api/v1 wire contract. Keep them in sync with web/src/types.ts and
+// internal/client/client.go (no case-insensitive fallback exists in TS).
 type Host struct {
-	ID             uuid.UUID
-	Name           string
-	Node           string
-	OwnerID        uuid.UUID
-	ConsumerID     uuid.UUID
-	WGPublicKey    string
-	WGPreSharedKey string
-	GWPrivateKey   string
-	GWPublicKey    string
-	TunnelIPv4     string
-	TunnelIPv6     string
-	ConsumerWGPublicKey *string
-	ConsumerTunnelIPv4  *string
-	ConsumerTunnelIPv6  *string
-	Endpoint       *string
-	Transport      string
-	ListenPort     int
-	Params          []byte
-	Keepalive       int
-	State           string
+	ID                  uuid.UUID `json:"id"`
+	Name                string    `json:"name"`
+	Node                string    `json:"node"`
+	OwnerID             uuid.UUID `json:"owner_id"`
+	ConsumerID          uuid.UUID `json:"consumer_id"`
+	WGPublicKey         string    `json:"wg_public_key"`
+	WGPreSharedKey      string    `json:"-"`
+	GWPrivateKey        string    `json:"-"`
+	GWPublicKey         string    `json:"gw_public_key"`
+	TunnelIPv4          string    `json:"tunnel_ipv4"`
+	TunnelIPv6          string    `json:"tunnel_ipv6"`
+	ConsumerWGPublicKey *string   `json:"consumer_wg_public_key,omitempty"`
+	ConsumerTunnelIPv4  *string   `json:"consumer_tunnel_ipv4,omitempty"`
+	ConsumerTunnelIPv6  *string   `json:"consumer_tunnel_ipv6,omitempty"`
+	Endpoint            *string   `json:"endpoint,omitempty"`
+	Transport           string    `json:"transport"`
+	ListenPort          int       `json:"listen_port"`
+	Params              []byte    `json:"params,omitempty"`
+	Keepalive           int       `json:"keepalive"`
+	State               string    `json:"state"`
 }
 
 type Forward struct {
-	ID         uuid.UUID
-	HostID     uuid.UUID
-	PublicPort int
-	TargetPort int
-	Proto      string
-	Label      string
+	ID         uuid.UUID `json:"id"`
+	HostID     uuid.UUID `json:"host_id"`
+	PublicPort int       `json:"public_port"`
+	TargetPort int       `json:"target_port"`
+	Proto      string    `json:"proto"`
+	Label      string    `json:"label"`
 }
 
 func (s *Store) UserBySub(ctx context.Context, sub string) (*User, error) {

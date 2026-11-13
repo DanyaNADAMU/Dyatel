@@ -130,28 +130,28 @@ func (c *Client) Status() ([]byte, error) {
 }
 
 // Host mirrors the daemon's wire format. The daemon serializes store.Host
-// directly and store.Host carries no json tags, so field names are the Go
-// identifiers (ID, OwnerID, ...); the tags here pin that contract instead
-// of silently relying on encoding/json's case-insensitive fallback.
+// directly and its snake_case json tags are the canonical contract; the tags
+// here pin the same names so a casing drift fails loudly instead of relying
+// on encoding/json's case-insensitive fallback.
 type Host struct {
-	ID                  string          `json:"ID"`
-	Name                string          `json:"Name"`
-	Node                string          `json:"Node"`
-	OwnerID             string          `json:"OwnerID"`
-	ConsumerID          string          `json:"ConsumerID"`
-	WGPublicKey         string          `json:"WGPublicKey"`
-	GWPublicKey         string          `json:"GWPublicKey"`
-	TunnelIPv4          string          `json:"TunnelIPv4"`
-	TunnelIPv6          string          `json:"TunnelIPv6"`
-	ConsumerWGPublicKey *string         `json:"ConsumerWGPublicKey"`
-	ConsumerTunnelIPv4  *string         `json:"ConsumerTunnelIPv4"`
-	ConsumerTunnelIPv6  *string         `json:"ConsumerTunnelIPv6"`
-	Endpoint            *string         `json:"Endpoint"`
-	Transport           string          `json:"Transport"`
-	ListenPort          int             `json:"ListenPort"`
-	Params              json.RawMessage `json:"Params"`
-	Keepalive           int             `json:"Keepalive"`
-	State               string          `json:"State"`
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Node                string          `json:"node"`
+	OwnerID             string          `json:"owner_id"`
+	ConsumerID          string          `json:"consumer_id"`
+	WGPublicKey         string          `json:"wg_public_key"`
+	GWPublicKey         string          `json:"gw_public_key"`
+	TunnelIPv4          string          `json:"tunnel_ipv4"`
+	TunnelIPv6          string          `json:"tunnel_ipv6"`
+	ConsumerWGPublicKey *string         `json:"consumer_wg_public_key,omitempty"`
+	ConsumerTunnelIPv4  *string         `json:"consumer_tunnel_ipv4,omitempty"`
+	ConsumerTunnelIPv6  *string         `json:"consumer_tunnel_ipv6,omitempty"`
+	Endpoint            *string         `json:"endpoint,omitempty"`
+	Transport           string          `json:"transport"`
+	ListenPort          int             `json:"listen_port"`
+	Params              json.RawMessage `json:"params,omitempty"`
+	Keepalive           int             `json:"keepalive"`
+	State               string          `json:"state"`
 }
 
 // DecodedParams returns the transport params as the JSON object the owner
@@ -245,12 +245,12 @@ func (c *Client) ClientConfig(id string) ([]byte, error) {
 // Forward mirrors the daemon wire format (same untagged-store serialization
 // as Host).
 type Forward struct {
-	ID         string `json:"ID"`
-	HostID     string `json:"HostID"`
-	PublicPort int    `json:"PublicPort"`
-	TargetPort int    `json:"TargetPort"`
-	Proto      string `json:"Proto"`
-	Label      string `json:"Label"`
+	ID         string `json:"id"`
+	HostID     string `json:"host_id"`
+	PublicPort int    `json:"public_port"`
+	TargetPort int    `json:"target_port"`
+	Proto      string `json:"proto"`
+	Label      string `json:"label"`
 }
 
 // CreateForwardRequest is the POST /hosts/{id}/forwards payload.
