@@ -90,6 +90,27 @@
     comment: "Dyatel AmneziaWG Transport"
   notify: Reload ufw
 
+- name: Query current UFW ruleset for Dyatel route rule reconciliation
+  ansible.builtin.command:
+    cmd: ufw status
+  changed_when: false
+  register: dyatel_gateway_awg_ufw_status
+
+- name: Remove stale Dyatel AWG forward route rules from UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ item.0 }}"
+    to_port: "{{ item.1 }}"
+    proto: "{{ item.2 }}"
+    delete: true
+  loop: "{{ dyatel_gateway_awg_ufw_status.stdout | regex_findall(dyatel_gateway_awg_stale_route_regex) }}"
+  when: item.0 not in [dyatel_gateway_awg_client_ip_ipv4, dyatel_gateway_awg_client_ip_ipv6]
+  notify: Reload ufw
+  vars:
+    dyatel_gateway_awg_stale_route_regex: >-
+      (?m)^(\S+)\s+([0-9]+)/(\w+)\s+ALLOW FWD\s+\S+(?:\s+\(v6\))?\s+# Dyatel forward (?:IPv6 )?to AWG client node
+
 - name: Allow routed TCP traffic to AmneziaWG client node in UFW
   community.general.ufw:
     route: true
