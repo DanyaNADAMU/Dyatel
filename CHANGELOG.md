@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-11-13
+
 ### Added
 - `dyatelctl` CLI (cobra + carapace completions): `me`, `status`, `hosts`
   (`list|create|show|rm|state|register-consumer-key|config proxer|client`),
