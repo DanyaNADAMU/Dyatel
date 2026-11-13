@@ -94,3 +94,17 @@ dyatel_core_service_name: "dyatel-core"
 
 # Go toolchain on the control host for the build step
 dyatel_core_go_bin: "go"
+
+# Xray (RFC §3 xray-vless: TLS masquerade only, no Reality). One aggregate
+# config + one systemd instance per node, named distinctly from any other
+# xray on the host (e.g. a personal xray.service): xray@dyatel.
+dyatel_core_xray_binary: "/usr/local/bin/xray"
+dyatel_core_xray_config_path: "/etc/xray/dyatel.json"
+dyatel_core_xray_service_name: "xray@dyatel"
+# Pinned upstream release downloaded only when the binary is absent
+# (idempotent: an existing binary is reused as-is; uninstall never
+# removes it since it may be shared with other instances).
+dyatel_core_xray_version: "26.11.9"
+# Download the pinned release when the binary is absent; false = reuse an
+# already-installed xray and only manage the dyatel instance unit.
+dyatel_core_xray_install: true

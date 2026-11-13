@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -15,12 +16,14 @@ import (
 	"nadamu/dyatel/internal/config"
 	"nadamu/dyatel/internal/store"
 	"nadamu/dyatel/internal/transport/wireguard"
+	"nadamu/dyatel/internal/transport/xrayvless"
 )
 
 type Reconciler struct {
 	cfg    *config.Config
 	st     *store.Store
 	wg     *wireguard.WG
+	xr     *xrayvless.Xray
 	kick   chan struct{}
 	mu     sync.Mutex
 	last   map[string]HostStatus // ifname -> status
@@ -47,7 +50,7 @@ type Endpoint struct {
 }
 
 func New(cfg *config.Config, st *store.Store) *Reconciler {
-	return &Reconciler{cfg: cfg, st: st, wg: wireguard.New(cfg),
+	return &Reconciler{cfg: cfg, st: st, wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
 		kick: make(chan struct{}, 1), last: map[string]HostStatus{}}
 }
 
@@ -120,6 +123,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 	seen := map[string]bool{}      // live ifaces
 	seenNames := map[string]bool{} // live host names (ufw comment key)
 	statuses := map[string]HostStatus{}
+	var xrayHosts []store.Host // active xray-vless hosts → aggregated config
 	for _, h := range hosts {
 		ifname := wireguard.InterfaceName(h)
 		tool := wireguard.ToolName(h.Transport) // wg / awg (awg = wg fork)
@@ -130,11 +134,16 @@ func (r *Reconciler) pass(ctx context.Context) {
 			// No tunnel iface on this node: xray terminates the leg and the
 			// VLESS protocol carries the destination, so there is no NAT/DNAT
 			// either — only the firewall opening for the TCP listener.
-			seenNames[h.Name] = true
-			key := fmt.Sprintf("%d/tcp", h.ListenPort)
-			_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
-				"comment", "Dyatel host="+h.Name)
-			pruneUFW(ctx, r.cfg.UFWBinary, h.Name, map[string]bool{key: true})
+			// The aggregated server config is rendered once per pass, after
+			// the loop (one xray process per node).
+			if h.State == "active" {
+				xrayHosts = append(xrayHosts, h)
+				seenNames[h.Name] = true
+				key := fmt.Sprintf("%d/tcp", h.ListenPort)
+				_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+					"comment", "Dyatel host="+h.Name)
+				pruneUFW(ctx, r.cfg.UFWBinary, h.Name, map[string]bool{key: true})
+			}
 			statuses[h.Name] = st
 			continue
 		}
@@ -186,10 +195,52 @@ func (r *Reconciler) pass(ctx context.Context) {
 		}
 		statuses[ifname] = st
 	}
+	r.reconcileXray(ctx, xrayHosts)
 	r.pruneOrphans(ctx, seen, seenNames)
 	r.mu.Lock()
 	r.last, r.lastAt = statuses, time.Now()
 	r.mu.Unlock()
+}
+
+// reconcileXray renders the aggregated berg-side xray config (all active
+// xray-vless hosts of this node, one inbound each) and keeps the
+// xray@dyatel systemd instance in sync: atomic write on change, restart
+// only then (no config bounce on unchanged passes), stop when the last
+// host goes away. Empty host set renders a valid empty config, so the
+// file always exists and `xray -test` can verify it.
+func (r *Reconciler) reconcileXray(ctx context.Context, hosts []store.Host) {
+	cfg, err := r.xr.RenderServerConfigMulti(hosts)
+	if err != nil {
+		r.lastErr(fmt.Errorf("render xray config: %w", err))
+		return
+	}
+	if old, err := os.ReadFile(r.cfg.XrayConfigPath); err != nil || !bytes.Equal(old, cfg) {
+		if err := writeFileAtomic(r.cfg.XrayConfigPath, cfg, 0600); err != nil {
+			r.lastErr(fmt.Errorf("write xray config: %w", err))
+			return
+		}
+		if out, err := run(ctx, "systemctl", "restart", r.cfg.XrayServiceName); err != nil {
+			r.lastErr(fmt.Errorf("restart %s: %v %s", r.cfg.XrayServiceName, err, out))
+			return
+		}
+	}
+	if len(hosts) == 0 {
+		// no vless listeners left: a running unit would idle on an empty
+		// config — stop it (disabled stays owned by ansible).
+		if out, err := run(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err == nil &&
+			strings.TrimSpace(out) == "active" {
+			_, _ = run(ctx, "systemctl", "stop", r.cfg.XrayServiceName)
+		}
+		return
+	}
+	// hosts exist: make sure the unit is up even after node reboot or a
+	// manual stop (enabled by ansible, started here for idempotence).
+	if out, err := run(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err != nil ||
+		strings.TrimSpace(out) != "active" {
+		if out, err := run(ctx, "systemctl", "start", r.cfg.XrayServiceName); err != nil {
+			r.lastErr(fmt.Errorf("start %s: %v %s", r.cfg.XrayServiceName, err, out))
+		}
+	}
 }
 
 // pruneOrphans removes NAT chains and UFW rules of hosts that no longer

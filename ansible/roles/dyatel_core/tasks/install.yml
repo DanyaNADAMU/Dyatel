@@ -177,6 +177,88 @@
   when: (dyatel_core_ctl_target_binary.stat.checksum | default('')) != (dyatel_core_ctl_local_binary.stat.checksum | default(''))
   tags: [build]
 
+# --- Xray (RFC §3 xray-vless: one aggregate config per node) ---
+
+- name: Check xray binary presence
+  ansible.builtin.stat:
+    path: "{{ dyatel_core_xray_binary }}"
+  register: dyatel_core_xray_binary_stat
+  tags: [xray]
+
+- name: Fail with a hint when xray binary is missing and download is disabled
+  ansible.builtin.fail:
+    msg: >-
+      xray binary {{ dyatel_core_xray_binary }} not found and
+      dyatel_core_xray_install is false. Install xray or set the override.
+  when:
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+    - not dyatel_core_xray_install | bool
+  tags: [xray]
+
+- name: Download pinned xray release
+  ansible.builtin.get_url:
+    url: "https://github.com/XTLS/Xray-core/releases/download/v{{ dyatel_core_xray_version }}/Xray-linux-64.zip"
+    dest: /tmp/dyatel-xray.zip
+    mode: "0644"
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Unpack xray binary
+  ansible.builtin.unarchive:
+    src: /tmp/dyatel-xray.zip
+    dest: /tmp/dyatel-xray
+    remote_src: true
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Install xray binary
+  ansible.builtin.copy:
+    src: /tmp/dyatel-xray/xray
+    dest: "{{ dyatel_core_xray_binary }}"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Remove downloaded xray archive and unpacked directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/dyatel-xray.zip
+    - /tmp/dyatel-xray
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
+- name: Deploy xray@dyatel systemd unit
+  ansible.builtin.template:
+    src: "xray@dyatel.service.j2"
+    dest: "/etc/systemd/system/{{ dyatel_core_xray_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  tags: [xray, config]
+
+# Enabled but NOT started here: the aggregate config is rendered by
+# dyatel-core at runtime (first pass creates /etc/xray/dyatel.json);
+# starting an instance without it would crash-loop the unit.
+- name: Enable xray@dyatel unit without starting it
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_xray_service_name }}"
+    enabled: true
+  tags: [xray, service]
+
 # --- Configuration and unit ---
 
 - name: Ensure dyatel config directory exists

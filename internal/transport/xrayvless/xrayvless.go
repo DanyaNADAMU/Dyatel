@@ -283,38 +283,45 @@ type clientConfig struct {
 	Routing   routing         `json:"routing"`
 }
 
-// RenderServerConfig renders the berg-side xray JSON: one vless inbound
-// on the host's pool port with TLS masking, freedom as the first
-// (routing-default) outbound. No per-forward config here: the VLESS
-// protocol carries the destination address to berg.
+// RenderServerConfig renders the berg-side xray JSON for a single host.
+// Kept for single-host consumers (dyatelctl); the reconciler renders the
+// aggregated node-wide config via RenderServerConfigMulti.
 func (x *Xray) RenderServerConfig(h store.Host) ([]byte, error) {
-	p, err := ParseXrayParams(h.Params)
-	if err != nil {
-		return nil, err
-	}
-	// Certificates come from params: with cert_file set we point xray at
-	// the files on berg; without it we embed placeholders the operator
-	// must substitute locally (BYOK: the core never holds private keys).
-	var certs []certificate
-	var comment string
-	if p.CertFile != "" {
-		certs = []certificate{{
-			CertificateFile: p.CertFile,
-			KeyFile:         p.KeyFile,
-		}}
-	} else {
-		certs = []certificate{{
-			Certificate: []string{CertPlaceholder},
-			Key:         []string{KeyPlaceholder},
-		}}
-		comment = "Substitute " + CertPlaceholder + " and " + KeyPlaceholder +
-			" with real PEM cert/key content on berg before starting xray " +
-			"(BYOK: the core never holds TLS private keys)."
-	}
-	cfg := serverConfig{
-		Comment: comment,
-		Log:     &logCfg{LogLevel: "warning"},
-		Inbounds: []serverInbound{{
+	return x.RenderServerConfigMulti([]store.Host{h})
+}
+
+// RenderServerConfigMulti renders the aggregated berg-side xray JSON:
+// ONE file and ONE xray process per node, one vless inbound per host.
+// Inbound tags carry the host name so a status pass can map them back.
+// No per-forward config here: the VLESS protocol carries the destination
+// address to berg, and the freedom outbound is the routing default.
+func (x *Xray) RenderServerConfigMulti(hosts []store.Host) ([]byte, error) {
+	var comments []string
+	inbounds := make([]serverInbound, 0, len(hosts))
+	for _, h := range hosts {
+		p, err := ParseXrayParams(h.Params)
+		if err != nil {
+			return nil, fmt.Errorf("host %s: %w", h.Name, err)
+		}
+		// Certificates come from params: with cert_file set we point xray
+		// at the files on berg; without it we embed placeholders the
+		// operator must substitute locally (BYOK: the core never holds
+		// private keys).
+		var certs []certificate
+		if p.CertFile != "" {
+			certs = []certificate{{
+				CertificateFile: p.CertFile,
+				KeyFile:         p.KeyFile,
+			}}
+		} else {
+			certs = []certificate{{
+				Certificate: []string{CertPlaceholder},
+				Key:         []string{KeyPlaceholder},
+			}}
+			comments = append(comments, fmt.Sprintf("host %s: substitute %s and %s with real PEM cert/key content on berg before starting xray (BYOK: the core never holds TLS private keys)",
+				h.Name, CertPlaceholder, KeyPlaceholder))
+		}
+		inbounds = append(inbounds, serverInbound{
 			Listen:   "0.0.0.0",
 			Port:     h.ListenPort,
 			Protocol: "vless",
@@ -332,8 +339,13 @@ func (x *Xray) RenderServerConfig(h store.Host) ([]byte, error) {
 				},
 				TCPSettings: &tcpSettings{Header: &tcpHeader{Type: "none"}},
 			},
-			Tag: "vless-in",
-		}},
+			Tag: "vless-in-" + h.Name,
+		})
+	}
+	cfg := serverConfig{
+		Comment:  strings.Join(comments, " | "),
+		Log:      &logCfg{LogLevel: "warning"},
+		Inbounds: inbounds,
 		Outbounds: []outbound{{
 			Protocol: "freedom",
 			Tag:      "direct",

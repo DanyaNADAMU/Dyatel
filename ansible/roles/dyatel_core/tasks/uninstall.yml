@@ -33,6 +33,26 @@
     state: absent
   tags: [build, uninstall]
 
+- name: Stop and disable xray@dyatel unit
+  ansible.builtin.systemd:
+    name: "{{ dyatel_core_xray_service_name }}"
+    enabled: false
+    state: stopped
+  tags: [xray, service, uninstall]
+
+- name: Remove xray@dyatel unit and aggregate config
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/systemd/system/{{ dyatel_core_xray_service_name }}.service"
+    - "{{ dyatel_core_xray_config_path }}"
+  notify: Reload systemd
+  tags: [xray, config, uninstall]
+
+# The xray binary itself stays: it may be shared with other instances on
+# the host (e.g. a personal xray.service) and is never owned by dyatel.
+
 - name: Remove IPv4/IPv6 forwarding sysctl drop-in
   ansible.builtin.file:
     path: /etc/sysctl.d/60-ansible-dyatel.conf

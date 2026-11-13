@@ -116,6 +116,39 @@ func TestRenderServerConfigShape(t *testing.T) {
 	}
 }
 
+func TestRenderServerConfigMultiAggregates(t *testing.T) {
+	x := New(testCfg())
+	a := testHost(validParams)
+	b := testHost(validParams)
+	b.Name = "second"
+	b.ListenPort = 5202
+	out, err := x.RenderServerConfigMulti([]store.Host{a, b})
+	if err != nil {
+		t.Fatalf("RenderServerConfigMulti: %v", err)
+	}
+	s := string(out)
+	if got := strings.Count(s, `"protocol": "vless"`); got != 2 {
+		t.Fatalf("expected two vless inbounds, got %d:\n%s", got, out)
+	}
+	if !strings.Contains(s, `"tag": "vless-in-acme"`) || !strings.Contains(s, `"tag": "vless-in-second"`) {
+		t.Fatalf("missing per-host inbound tags:\n%s", out)
+	}
+	if got := strings.Count(s, `"protocol": "freedom"`); got != 1 {
+		t.Fatalf("expected exactly one freedom outbound, got %d:\n%s", got, out)
+	}
+	if got := strings.Count(s, `"port": 5201`); got != 1 || strings.Count(s, `"port": 5202`) != 1 {
+		t.Fatalf("missing distinct pool ports:\n%s", out)
+	}
+	// One bad host fails the whole aggregate: partial configs would leave
+	// the node's xray serving a stale host set.
+	c := testHost(validParams)
+	c.Name = "bad"
+	c.Params = []byte(`{"sni":"x"}`)
+	if _, err := x.RenderServerConfigMulti([]store.Host{a, c}); err == nil {
+		t.Fatal("RenderServerConfigMulti must fail on invalid host params")
+	}
+}
+
 func TestRenderServerConfigCertFiles(t *testing.T) {
 	p := `{"sni":"a.example.com","uuid":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","proxer_endpoint":"198.51.100.7","cert_file":"/etc/xray/cert.pem","key_file":"/etc/xray/key.pem"}`
 	out, err := New(testCfg()).RenderServerConfig(testHost(p))

@@ -41,6 +41,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single strict redirect URI `https://dyatel.<domain>/`; Vaultwarden sync
   item for the core fallback admin points at the same origin.
 
+### Added
+- xray-vless berg bring-up: the reconciler now renders one aggregate
+  xray config per node (`RenderServerConfigMulti`, one vless inbound per
+  host, single freedom outbound), compares it byte-wise to the on-disk
+  `/etc/xray/dyatel.json` and atomically rewrites + restarts `xray@dyatel`
+  only on diff; an empty host set stops the unit (and a live-but-stopped
+  unit is started back), so suspended hosts drop out of the aggregate and
+  lose their UFW allow in the same pass. Reality is rejected at parse
+  time everywhere: VLESS runs strictly as a TLS masquerade (Reality is
+  unusable in Russia). BYOK stays: without `cert_file`/`key_file` the
+  config embeds PEM placeholders for the operator to substitute on the
+  berg, so the core never holds TLS private keys.
+- Ansible role `dyatel_core`: pinned xray release install (only when
+  the binary is absent; never removed on uninstall since xray may be
+  shared with other instances on the host), `xray@dyatel` template unit
+  (enabled but not started — the core starts it once it has rendered a
+  valid aggregate config), paired uninstall of unit + config, and
+  `DYATEL_XRAY_CONFIG_PATH`/`DYATEL_XRAY_SERVICE` env plumbing.
+
 ## [v1.1.0] - 2026-11-13
 
 ### Added
