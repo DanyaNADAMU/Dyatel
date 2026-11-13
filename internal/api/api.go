@@ -128,6 +128,7 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		Transport string `json:"transport"`
 		ConsumerID string `json:"consumer_id"` // invitation
 		Keepalive  int    `json:"keepalive"`
+		Params     json.RawMessage `json:"params"` // transport-specific (awg obfuscation)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad json", 400)
@@ -139,6 +140,23 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Transport == "" {
 		in.Transport = "wireguard"
+	}
+	var params []byte
+	switch in.Transport {
+	case "wireguard":
+		// plain wireguard has no extra knobs today
+	case "amneziawg":
+		// validate early so bad ranges fail at create, not at reconcile
+		if _, err := wireguard.ParseAWGParams(in.Params); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if len(in.Params) > 0 {
+			params = in.Params
+		}
+	default:
+		http.Error(w, "unknown transport", 400)
+		return
 	}
 	// Consumer is always an invitation target: must exist and differ from owner
 	// (DB CHECK owner_id <> consumer_id). Self-hosting both roles = two records.
@@ -177,6 +195,7 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		TunnelIPv4: tv4, TunnelIPv6: tv6,
 		Transport: in.Transport, ListenPort: port,
 		Keepalive: orDefault(in.Keepalive, 25),
+		Params:    params,
 	}
 	if err := s.rc.PrepareHost(r.Context(), h); err != nil { // PSK + gw keypair + persist
 		http.Error(w, err.Error(), 500)

@@ -28,13 +28,20 @@ type WG struct {
 func New(cfg *config.Config) *WG { return &WG{cfg: cfg} }
 
 // InterfaceName returns the per-host berg-side wg interface name.
+// Transport-tagged prefix (awd- for amneziawg) so the two families
+// never collide in the 15-char kernel namespace and prune can tell
+// them apart by prefix alone.
 func InterfaceName(h store.Host) string {
-	max := 15 - len("wgd-")
+	prefix := "wgd-"
+	if h.Transport == "amneziawg" {
+		prefix = "awd-"
+	}
+	max := 15 - len(prefix)
 	n := h.Name
 	if len(n) > max {
 		n = n[:max]
 	}
-	return "wgd-" + n
+	return prefix + n
 }
 
 // RenderProxerConfig renders the owner-side wg-quick config.
@@ -59,6 +66,14 @@ func (w *WG) render(h store.Host, tpl *template.Template) ([]byte, error) {
 	if len(h.Params) > 0 && !json.Valid(h.Params) {
 		return nil, fmt.Errorf("bad params json")
 	}
+	var awg string
+	if h.Transport == "amneziawg" {
+		p, err := ParseAWGParams(h.Params)
+		if err != nil {
+			return nil, err
+		}
+		awg = p.Render()
+	}
 	data := struct {
 		Host       store.Host
 		Endpoint   string
@@ -66,6 +81,7 @@ func (w *WG) render(h store.Host, tpl *template.Template) ([]byte, error) {
 		GWIPv6     string
 		Keepalive  int
 		IsAWG      bool
+		AWG        string
 		PrivateKey string
 	}{
 		Host:       h,
@@ -74,6 +90,7 @@ func (w *WG) render(h store.Host, tpl *template.Template) ([]byte, error) {
 		GWIPv6:     gwIPv6(w.cfg),
 		Keepalive:  h.Keepalive,
 		IsAWG:      h.Transport == "amneziawg",
+		AWG:        awg,
 		PrivateKey: PrivateKeyPlaceholder,
 	}
 	var buf bytes.Buffer
@@ -87,7 +104,7 @@ const hostTplStr = `[Interface]
 Address = {{.Host.TunnelIPv4}}, {{.Host.TunnelIPv6}}
 PrivateKey = {{.PrivateKey}}
 {{- if .IsAWG }}
-{{- /* AWG obfuscation params injected in phase 1b from hosts.params */}}
+{{.AWG}}
 {{- end }}
 
 # berg (core) — dial in; this side never listens
@@ -102,6 +119,9 @@ PersistentKeepalive = {{.Keepalive}}
 const clientTplStr = `[Interface]
 Address = {{.Host.ConsumerTunnelIPv4}}, {{.Host.ConsumerTunnelIPv6}}
 PrivateKey = {{.PrivateKey}}
+{{- if .IsAWG }}
+{{.AWG}}
+{{- end }}
 
 # proxer host {{.Host.Name}} (routed via berg)
 [Peer]
@@ -128,6 +148,14 @@ func (w *WG) RenderGWConfig(h store.Host) ([]byte, error) {
 	b.WriteString(fmt.Sprintf("Address = %s/32, %s/128\n", w.cfg.CoreListenIP, gwIPv6(w.cfg)))
 	b.WriteString(fmt.Sprintf("ListenPort = %d\n", h.ListenPort))
 	b.WriteString(fmt.Sprintf("PrivateKey = %s\n", h.GWPrivateKey))
+	if h.Transport == "amneziawg" {
+		// same obfuscation as the peers: berg must junk-pad identically
+		p, err := ParseAWGParams(h.Params)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(p.Render())
+	}
 	b.WriteString("Table = off\n")
 	b.WriteString(fmt.Sprintf("# proxer %s (%s)\n", h.Name, h.Transport))
 	b.WriteString(fmt.Sprintf("[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s, %s\n\n",

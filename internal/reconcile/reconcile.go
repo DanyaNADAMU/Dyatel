@@ -122,6 +122,8 @@ func (r *Reconciler) pass(ctx context.Context) {
 	statuses := map[string]HostStatus{}
 	for _, h := range hosts {
 		ifname := wireguard.InterfaceName(h)
+		tool := wireguard.ToolName(h.Transport) // wg / awg (awg = wg fork)
+		linkType := wireguard.LinkType(h.Transport)
 		st := HostStatus{Name: h.Name, Interface: ifname, State: h.State,
 			ListenPort: h.ListenPort, Transport: h.Transport, Endpoints: map[string]Endpoint{}}
 		cfg, err := r.wg.RenderGWConfig(h)
@@ -131,7 +133,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 			continue
 		}
 		if cfg == nil { // suspended: teardown iface, forwards pruned as orphan
-			if out, err := run(ctx, "wg", "show", ifname); err == nil && out != "" {
+			if out, err := run(ctx, tool, "show", ifname); err == nil && out != "" {
 				_, _ = run(ctx, "ip", "link", "delete", ifname) // teardown suspended
 			}
 			statuses[ifname] = st
@@ -148,13 +150,13 @@ func (r *Reconciler) pass(ctx context.Context) {
 		if _, err := run(ctx, "ip", "link", "show", ifname); err != nil {
 			// interface missing → first bring-up
 			if _, err := run(ctx, "bash", "-c",
-				fmt.Sprintf("ip link add %s type wireguard && wg setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
-					ifname, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname)); err != nil {
+				fmt.Sprintf("ip link add %s type %s && %s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
+					ifname, linkType, tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname)); err != nil {
 				st.LastError = fmt.Sprintf("bring-up: %v", err)
 			}
 		} else if _, err := run(ctx, "bash", "-c",
-			fmt.Sprintf("wg syncconf %s <(wg-quick strip %s) && ip link set %s up",
-				ifname, path, ifname)); err != nil {
+			fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip link set %s up",
+				tool, ifname, path, ifname)); err != nil {
 			// syncconf keeps keys/peers without bouncing the tunnel; the
 			// explicit link-up covers interfaces whose socket failed to bind
 			// at creation (port conflict) and were left DOWN.
@@ -184,11 +186,18 @@ func (r *Reconciler) pass(ctx context.Context) {
 // exist (or are suspended): iptables -S lists every DYATEL-<ifname> chain,
 // ufw status lists every "Dyatel host=<name>" rule comment.
 func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, seenNames map[string]bool) {
-	// orphan wgd-* interfaces (host deleted): bring the list down
-	if out, err := run(ctx, "ip", "-o", "link", "show", "type", "wireguard"); err == nil {
+	// orphan wgd-*/awd-* interfaces (host deleted): bring the list down.
+	// amneziawg registers its own link kind, so both families are scanned.
+	for _, typ := range []struct{ link, prefix string }{
+		{"wireguard", "wgd-"}, {"amneziawg", "awd-"},
+	} {
+		out, err := run(ctx, "ip", "-o", "link", "show", "type", typ.link)
+		if err != nil {
+			continue
+		}
 		for _, line := range strings.Split(out, "\n") {
 			fields := strings.Fields(line)
-			if len(fields) < 2 || !strings.HasPrefix(fields[1], "wgd-") {
+			if len(fields) < 2 || !strings.HasPrefix(fields[1], typ.prefix) {
 				continue
 			}
 			iface := strings.TrimSuffix(fields[1], ":")
