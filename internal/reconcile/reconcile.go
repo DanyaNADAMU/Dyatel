@@ -126,6 +126,18 @@ func (r *Reconciler) pass(ctx context.Context) {
 		linkType := wireguard.LinkType(h.Transport)
 		st := HostStatus{Name: h.Name, Interface: ifname, State: h.State,
 			ListenPort: h.ListenPort, Transport: h.Transport, Endpoints: map[string]Endpoint{}}
+		if h.Transport == "xray-vless" {
+			// No tunnel iface on this node: xray terminates the leg and the
+			// VLESS protocol carries the destination, so there is no NAT/DNAT
+			// either — only the firewall opening for the TCP listener.
+			seenNames[h.Name] = true
+			key := fmt.Sprintf("%d/tcp", h.ListenPort)
+			_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+				"comment", "Dyatel host="+h.Name)
+			pruneUFW(ctx, r.cfg.UFWBinary, h.Name, map[string]bool{key: true})
+			statuses[h.Name] = st
+			continue
+		}
 		cfg, err := r.wg.RenderGWConfig(h)
 		if err != nil {
 			st.LastError = err.Error()
@@ -370,18 +382,7 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 			"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", tv, f.TargetPort))
 	}
 	// drop stale ufw rules this host no longer wants (deleted forwards)
-	if out, _ := run(ctx, r.cfg.UFWBinary, "status"); out != "" {
-		for _, line := range strings.Split(out, "\n") {
-			if !strings.Contains(line, "# Dyatel host="+h.Name+"") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) == 0 || want[fields[0]] {
-				continue
-			}
-			_, _ = run(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
-		}
-	}
+	pruneUFW(ctx, r.cfg.UFWBinary, h.Name, want)
 	// exactly one jump per chain: `iptables -C` reports via exit status
 	// only (stdout is empty), so err — not output — is the signal.
 	hook := func(c string) string {
@@ -403,6 +404,23 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 		if _, err := run(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
 			_, _ = run(ctx, "iptables", "-t", "nat", "-I", h, "-j", c)
 		}
+	}
+}
+
+// pruneUFW drops rules commented for this host that are no longer wanted
+// (deleted forwards, changed listen port). ufw status lists every rule
+// with its comment, so want is a plain port/proto key set.
+func pruneUFW(ctx context.Context, ufw, name string, want map[string]bool) {
+	out, _ := run(ctx, ufw, "status")
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "# Dyatel host="+name+"") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 || want[fields[0]] {
+			continue
+		}
+		_, _ = run(ctx, ufw, "--force", "delete", "allow", fields[0])
 	}
 }
 
