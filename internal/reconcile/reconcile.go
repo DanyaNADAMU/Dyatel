@@ -134,6 +134,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 		}
 		if cfg == nil { // suspended: teardown iface, forwards pruned as orphan
 			if out, err := run(ctx, tool, "show", ifname); err == nil && out != "" {
+				stopAWGUnit(ctx, ifname) // userspace owner first, tun dies with it
 				_, _ = run(ctx, "ip", "link", "delete", ifname) // teardown suspended
 			}
 			statuses[ifname] = st
@@ -148,10 +149,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 			continue
 		}
 		if _, err := run(ctx, "ip", "link", "show", ifname); err != nil {
-			// interface missing → first bring-up
-			if _, err := run(ctx, "bash", "-c",
-				fmt.Sprintf("ip link add %s type %s && %s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
-					ifname, linkType, tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname)); err != nil {
+			if err := r.bringUp(ctx, ifname, tool, linkType, path); err != nil {
 				st.LastError = fmt.Sprintf("bring-up: %v", err)
 			}
 		} else if _, err := run(ctx, "bash", "-c",
@@ -240,6 +238,54 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 	}
 }
 
+// bringUp creates a transport interface for the first time. Kernel path is
+// in-kernel syncconf; without the amneziawg kernel module (Debian 13 ships
+// none) awd-* falls back to userspace amneziawg-go owning a tun_iface, mirroring
+// the vendored awg-quick fallback. Userspace needs no addresses — utun is
+// point-to-point and the interface lives only as long as the unit.
+func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path string) error {
+	if linkType == "wireguard" {
+		_, err := run(ctx, "bash", "-c",
+			fmt.Sprintf("ip link add %s type wireguard && %s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
+				ifname, tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+		return err
+	}
+	// amneziawg: kernel module first, userspace fallback (awg-quick pattern)
+	if _, err := run(ctx, "ip", "link", "add", ifname, "type", "amneziawg"); err == nil {
+		_, err := run(ctx, "bash", "-c",
+			fmt.Sprintf("%s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
+				tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+		return err
+	}
+	// No kernel module: transient amneziawg-go unit owns the interface
+	// (vendored awg-quick pattern: binary takes the tun name as argv).
+	if out, err := run(ctx, "systemctl", "is-active", awgUnitName(ifname)); err != nil || strings.TrimSpace(out) != "active" {
+		if _, err := run(ctx, "systemd-run", "--unit", awgUnitName(ifname),
+			"--property", "Restart=always", "--property", "RestartSec=2",
+			"/usr/local/bin/amneziawg-go", ifname); err != nil {
+			return fmt.Errorf("userspace fallback: %w", err)
+		}
+	}
+	// wait for the tun to appear so syncconf/addr on it can't race the daemon
+	for i := 0; i < 50; i++ {
+		if _, err := run(ctx, "ip", "link", "show", ifname); err == nil {
+			break
+		}
+		select { case <-ctx.Done(): return ctx.Err(); case <-time.After(100 * time.Millisecond): }
+	}
+	_, err := run(ctx, "bash", "-c",
+		fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
+			tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+	return err
+}
+
+// stopAWGUnit stops the transient userspace unit if it is running this iface.
+func stopAWGUnit(ctx context.Context, ifname string) {
+	_, _ = run(ctx, "systemctl", "stop", awgUnitName(ifname))
+}
+
+func awgUnitName(ifname string) string { return "dyatel-awg-" + ifname }
+
 func (r *Reconciler) Status(ctx context.Context) map[string]any {
 	hosts, err := r.st.HostsByNode(ctx, r.cfg.Node)
 	if err != nil {
@@ -251,9 +297,9 @@ func (r *Reconciler) Status(ctx context.Context) map[string]any {
 	for _, h := range hosts {
 		ifname := wireguard.InterfaceName(h)
 		st := r.last[ifname]
-		// live handshake data from wg show
+		// live handshake data from wg/awg show
 		if st.State == "active" {
-			if show, err := run(ctx, "wg", "show", ifname, "dump"); err == nil {
+			if show, err := run(ctx, wireguard.ToolName(h.Transport), "show", ifname, "dump"); err == nil {
 				parseDump(show, st.Endpoints)
 			}
 		}
