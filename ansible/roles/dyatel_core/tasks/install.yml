@@ -205,6 +205,17 @@
     - not dyatel_core_xray_binary_stat.stat.exists | default(false)
   tags: [xray]
 
+- name: Create xray unpack directory
+  # unarchive cannot create the dest dir for zip archives itself
+  ansible.builtin.file:
+    path: /tmp/dyatel-xray
+    state: directory
+    mode: "0755"
+  when:
+    - dyatel_core_xray_install | bool
+    - not dyatel_core_xray_binary_stat.stat.exists | default(false)
+  tags: [xray]
+
 - name: Unpack xray binary
   ansible.builtin.unarchive:
     src: /tmp/dyatel-xray.zip

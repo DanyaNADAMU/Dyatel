@@ -85,6 +85,7 @@ dyatel_core_packages:
   - wireguard-tools
   - python3-psycopg2
   - acl  # ansible-core needs it to become_user: postgres
+  - unzip  # unarchive needs it for the pinned xray zip release
 
 # Purge packages on uninstall (data/system effects handled below)
 dyatel_core_purge_packages: false
