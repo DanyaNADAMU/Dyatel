@@ -367,6 +367,19 @@ every 30s (and on POST /reconcile):
   proto {proto}` with comment `Dyatel host={name} fwd={id}` — same
   comment-driven reconciliation, so stale IPs are impossible by
   construction.
+- **Proxer-side UFW contract** (outside core ownership, verified in the
+  awg-smoke staging run): the proxer/consumer host's *own* firewall must
+  allow the gw transport replies explicitly — `allow in proto udp from
+  {gw_public_ip} port {listen_port}` plus the LAN-path variant
+  (`from {gw_lan_cidr} port {listen_port}`) when host and gw share a
+  LAN. The gw's UDP replies source from its LAN address (route-selected),
+  not the public IP the client dials, so conntrack never matches the
+  reverse tuple and plain UFW default-drops them as unsolicited.
+  Same shape as the v1.0.1 gw transport rules (§3.4c). The rendered
+  client `Endpoint` is the configured public host (`PublicEndpointHost`),
+  which must resolve to a reachable A record for dial-in clients —
+  the awg-smoke run showed AAAA-first resolution sending handshakes
+  into a dead v6 path (fix: IPv4 endpoint for smoke).
 - **POSTROUTING MASQ**: forwarded packets keep the client's internet
   source IP after DNAT, which the host's wg cryptokey routing
   (AllowedIPs = gw /32 only) silently drops. Core adds a per-iface
