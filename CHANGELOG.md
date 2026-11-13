@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `ansible.cfg` collections path no longer references the stale
+  `/Projects/Infra/collections` checkout location; `collections_path` now
+  points at the canonical `/root/.ansible/collections` install root.
+- The duplicate `ansible/ansible.cfg` is aligned with the root config and
+  now also sets `collections_path`, so runs started from `ansible/` resolve
+  `community.general` identically.
+
+### Changed
+- `scripts/install.sh` now detects the system package manager (apt,
+  pacman, dnf) instead of assuming apt, so gateway/node bootstrap works
+  on Debian, Arch-based, and RHEL-based hosts.
+
 ## [v1.0.0] - 2026-11-10
 
 ### Added
