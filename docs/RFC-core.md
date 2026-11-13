@@ -339,11 +339,17 @@ that core answered `/status` after deploy.
 | phase | deliverable | done when |
 |---|---|---|
 | 0 (this doc) | RFC merged | user says ok |
-| 1 core (wg) | `cmd/dyatel-core`, migrations, reconcile, `/api/v1`, WG transport | staging: create host+forward via SQL/curl → MC client connects through berg, second run 0 drift |
+| 1 core (wg) | `cmd/dyatel-core`, migrations, reconcile, `/api/v1`, WG transport | `test` VM: create host+forward via SQL/curl → MC client connects through the VM, second run 0 drift |
 | 1b core (awg) | AWG transport plugin | same, via AWG client |
 | 2 CLI | `dyatelctl login/expose/status`, PAT auth | full cycle from terminal, zero curl |
 | 3 web | React+Vite+TS panel (shadcn/ui, tanstack-query) + Authentik OIDC | the "panel" the user asked for originally |
 | later | `xray-vless` transport | host connects via VLESS |
+
+Deployment topology: **staging = the `test` Incus VM on berg**
+(postgres clone, core, nginx all inside, zone `dyatel.test.nada.mu`);
+**production = core on berg + `dyatel` DB on glacier `17-main`**,
+promoted through the Infra release gate (main + tag + changelog).
+Testbed-first and idempotency (`changed=0`) rules apply throughout.
 
 Phase 1 alone already satisfies "usable without UI" (§2.5).
 
@@ -352,19 +358,15 @@ Phase 1 alone already satisfies "usable without UI" (§2.5).
 1. ~~Public berg port per host~~ — **resolved: per-host ports** (§3.4a).
 2. ~~IPv6 endpoint dials~~ — moot: endpoint is a DNS name resolving
    to both A and AAAA.
-3. DNS zone for forward records: Infra AGENTS.md §10 whitelists
-   Cloudflare automation to `test.nada.mu` / `lab.nada.mu` only;
-   apex `nada.mu` is forbidden. Staging publishes under
-   `test.nada.mu`. For production either (a) extend the whitelist
-   with a dedicated `dyatel.nada.mu` zone, (b) publish under
-   `lab.nada.mu`, or (c) skip DNS records entirely (wildcard
-   `*.nada.mu` already points at berg — a forward name works
-   without any CF call). **Recommendation: (c) for phase 1** —
-   DNS records become optional sugar, CF token needed only later.
-4. Base domain for the core API vhost: `api.<base_domain>` where
-   base_domain follows the Infra per-host parameter (staging
-   `test.nada.mu` → `api.test.nada.mu`; production decision when
-   berg gets its vhost).
+3. ~~DNS zone for forward records~~ — **resolved by testbed-first**:
+   all phase 1–3 work targets the `test` Incus VM on berg (glacier
+   mirror) under `dyatel.test.nada.mu` — inside the AGENTS.md §10
+   whitelist. Production zone decision (dedicated `dyatel.nada.mu`
+   wildcard vs §10 whitelist extension) is deferred to the release
+   gate; note the existing apex wildcard resolves to glacier, not
+   berg — do not rely on it.
+4. Base domain for the core API vhost: `api.dyatel.test.nada.mu`
+   on staging; production vhost decision at release-gate time.
 
 ## 12. Stack decision
 
