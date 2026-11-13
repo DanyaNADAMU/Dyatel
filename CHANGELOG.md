@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [v2.1.0] - 2026-11-13
+
+### Added
+- **Production inventory (`ansible/inventory.production.yml`)**: Glacier production core node — local PG 15 (`db_manage` one-shot), reuse of the system Xray binary (26.10.31, role skips download when present), `nada.mu` base domain. Masquerade mode stays per-host state in the DB (`params.mode`) set via `dyatelctl`, never Ansible. Panel vhost serves 443 directly (no berg SNI multiplexer): `dyatel_panel_nginx_behind_xray: false` keeps the public HTTPS listener, `dyatel.nada.mu` SPA + same-origin `/api/v1/` proxy.
+
 ## [v2.0.0] - 2026-11-13
 
 ### Changed

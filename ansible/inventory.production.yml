@@ -24,3 +24,7 @@ all:
           # Reuse the existing system xray binary (26.10.31, Infra XTLS
           # legacy path): the role skips download when the binary exists.
           dyatel_core_xray_version: "26.10.31"
+          # Glacier serves 443 directly (no berg L4 SNI multiplexer):
+          # keep the public HTTPS listener and a plain loopback bridge.
+          dyatel_panel_nginx_behind_xray: false
+          dyatel_panel_base_domain: "nada.mu"
