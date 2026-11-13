@@ -13,6 +13,7 @@ import (
 	"nadamu/dyatel/internal/reconcile"
 	"nadamu/dyatel/internal/store"
 	"nadamu/dyatel/internal/transport/wireguard"
+	"nadamu/dyatel/internal/transport/xrayvless"
 )
 
 type Server struct {
@@ -21,13 +22,14 @@ type Server struct {
 	au  *auth.Authenticator
 	al  *pool.Allocator
 	wg  *wireguard.WG
+	xr  *xrayvless.Xray
 	rc  *reconcile.Reconciler
 }
 
 func New(cfg *config.Config, st *store.Store, rc *reconcile.Reconciler) *Server {
 	au := auth.New(cfg, st)
 	return &Server{cfg: cfg, st: st, au: au, al: pool.New(cfg, st),
-		wg: wireguard.New(cfg), rc: rc}
+		wg: wireguard.New(cfg), xr: xrayvless.New(cfg), rc: rc}
 }
 
 func (s *Server) Router() http.Handler {
@@ -160,6 +162,21 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		if len(in.Params) > 0 {
 			params = in.Params
 		}
+	case "xray-vless":
+		// the VLESS uuid is a pair-shared credential like the PSK, so the
+		// core generates it when the owner did not supply one
+		injected, err := xrayvless.InjectUUID(in.Params)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		// validate early (sni/proxer_endpoint required, no reality) so bad
+		// params fail at create, not at reconcile
+		if _, err := xrayvless.ParseXrayParams(injected); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		params = injected
 	default:
 		http.Error(w, "unknown transport", 400)
 		return
@@ -297,6 +314,18 @@ func (s *Server) proxerConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "403", http.StatusForbidden)
 		return
 	}
+	// xray-vless ships an operator note on this side (berg dials the proxer
+	// directly), not a tunnel client config
+	if h.Transport == "xray-vless" {
+		cfg, err := s.xr.RenderProxerConfig(*h)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(cfg)
+		return
+	}
 	cfg, err := s.wg.RenderProxerConfig(*h)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -314,6 +343,23 @@ func (s *Server) clientConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.ConsumerID != id.User.ID && !id.IsAdmin {
 		http.Error(w, "403", http.StatusForbidden)
+		return
+	}
+	// xray-vless client config needs the forwards: one dokodemo-door
+	// inbound per forward, so we cannot reuse the wg renderer
+	if h.Transport == "xray-vless" {
+		fs, err := s.st.ForwardsByHost(r.Context(), h.ID)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		cfg, err := s.xr.RenderClientConfig(*h, fs)
+		if err != nil {
+			http.Error(w, "412: "+err.Error(), http.StatusPreconditionFailed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(cfg)
 		return
 	}
 	cfg, err := s.wg.RenderClientConfig(*h)
