@@ -92,7 +92,10 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 	id := auth.From(r.Context())
-	var hosts []store.Host
+	// Non-nil slice so the response encodes as [] rather than null; clients
+	// (dyatelctl, panel) expect a list even when the caller owns nothing.
+	// pgx scans zero rows into a nil slice, so keep the empty default.
+	hosts := []store.Host{}
 	var err error
 	if id.IsAdmin {
 		hosts, err = s.st.Hosts(r.Context())
@@ -102,6 +105,9 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+	if hosts == nil {
+		hosts = []store.Host{}
 	}
 	for i := range hosts {
 		hosts[i].GWPrivateKey = ""
@@ -329,11 +335,18 @@ func (s *Server) listForwards(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "403", http.StatusForbidden)
 		return
 	}
-	fs, err := s.st.ForwardsByHost(r.Context(), h.ID)
+	// Non-nil for [] instead of null on empty results (see listHosts);
+	// pgx scans zero rows into a nil slice, so restore the empty default.
+	fs := []store.Forward{}
+	f, err := s.st.ForwardsByHost(r.Context(), h.ID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	if f == nil {
+		f = []store.Forward{}
+	}
+	fs = f
 	writeJSON(w, fs)
 }
 
