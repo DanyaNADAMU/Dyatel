@@ -157,7 +157,7 @@ func (s *Store) CreateHost(ctx context.Context, h *Host) error {
 	if len(h.Params) == 0 {
 		h.Params = []byte("{}") // params jsonb NOT NULL default
 	}
-	return s.Pool.QueryRow(ctx,
+	err := s.Pool.QueryRow(ctx,
 		`INSERT INTO hosts (name, node, owner_id, consumer_id, wg_public_key, wg_preshared_key,
 		   gw_private_key, gw_public_key, tunnel_ipv4, tunnel_ipv6,
 		   consumer_wg_public_key, consumer_tunnel_ipv4, consumer_tunnel_ipv6,
@@ -167,7 +167,12 @@ func (s *Store) CreateHost(ctx context.Context, h *Host) error {
 		h.Name, h.Node, h.OwnerID, h.ConsumerID, h.WGPublicKey, h.WGPreSharedKey,
 		h.GWPrivateKey, h.GWPublicKey, h.TunnelIPv4, h.TunnelIPv6,
 		h.ConsumerWGPublicKey, h.ConsumerTunnelIPv4, h.ConsumerTunnelIPv6,
-		h.Endpoint, h.Transport, h.ListenPort, h.Params, h.Keepalive).Scan(&h.ID)
+		h.Endpoint, h.Transport, h.ListenPort, h.Params, h.Keepalive).
+		Scan(&h.ID)
+	// The insert hard-codes the initial state; RETURNING only fills ID,
+	// so mirror it into the struct the caller serializes back to the API.
+	h.State = "active"
+	return err
 }
 
 func (s *Store) SetHostConsumerKey(ctx context.Context, id uuid.UUID, pubKey string) error {

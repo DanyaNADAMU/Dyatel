@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Proxer-side UFW contract for AmneziaWG replies, documented in RFC §6
   after the live awg-smoke run (gw replies source from the gw LAN
   address; consumer-side UFW must allow them from both paths).
+- `xray-vless` transport (RFC §3.4a): typed config renderer with plain
+  TLS masking only — Reality is rejected at params parse time and every
+  output path is asserted Reality-free. `dyatelctl hosts config proxer`
+  returns an ops note (no per-forward config on the leg), `client`
+  renders dokodemo-door inbounds + routing rules per forward. UUID
+  injection at create, BYOK cert placeholders by default.
+- Reconcile opens `listen_port/tcp` for `xray-vless` hosts (the pool
+  allocates from 5200-5299/tcp) and skips tunnel-interface provisioning
+  entirely: xray terminates the leg, the protocol carries the
+  destination, no NAT/DNAT needed.
+
+### Fixed
+- `POST /hosts/` responses now carry the initial `state` ("active"):
+  the insert hard-codes it but RETURNING only filled ID, so the
+  serialized host lost it.
 
 ### Fixed
 - Empty API collections serialize as `[]` instead of `null`.

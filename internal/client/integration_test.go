@@ -67,7 +67,9 @@ func TestAgainstRealDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("me: %v", err)
 	}
-	if !me.IsAdmin || me.Auth != "fallback" || me.Sub != "" {
+	// The break-glass admin is provisioned with a sentinel sub (never a
+	// real Authentik sub), so the identity must carry it as-is.
+	if !me.IsAdmin || me.Auth != "fallback" || me.Sub != "fallback-admin" {
 		t.Fatalf("admin identity: %+v", me)
 	}
 	if _, err := admin.Status(); err != nil {
@@ -116,7 +118,9 @@ func TestAgainstRealDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get host: %v", err)
 	}
-	if got.ID != h.ID || got.WGPublicKey == "" {
+	// The berg gw keypair is generated at create; the consumer's own key
+	// (WGPublicKey) stays empty until BYOK registration below.
+	if got.ID != h.ID || got.GWPublicKey == "" {
 		t.Fatalf("fetched host: %+v", got)
 	}
 
