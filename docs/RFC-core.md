@@ -56,12 +56,31 @@ golang-migrate, files in `migrations/`.
 | column | type | notes |
 |---|---|---|
 | id | uuid pk default gen_random_uuid() | |
-| authentik_sub | text not null unique | OIDC `sub` claim |
+| authentik_sub | text not null unique | OIDC `sub` claim; null for the break-glass admin |
 | display_name | text not null | from Authentik profile |
+| is_admin | bool not null default false | synced from the Authentik admin group on every login/token check |
 | created_at | timestamptz not null default now() | |
 
 Users are **provisioned lazily**: first successful token validation
-inserts a row. No admin user management.
+inserts a row.
+
+**Admins**: two sources, unioned.
+1. **Authentik group membership** (config: `authentik_admin_group`):
+   on every successful OIDC/PAT auth the core re-checks group
+   membership via the Authentik token introspection / userinfo and
+   syncs `is_admin` — removal from the group revokes admin on the
+   next request.
+2. **Break-glass admin** (works when Authentik is down): a single
+   login + argon2id hash in the core env file
+   (`DYATEL_FALLBACK_ADMIN_USER` / `..._HASH`), validated by the
+   core itself, bypassing OIDC entirely. The panel offers both
+   login methods. No DB row is needed; audit events mark auth
+   method (`oidc` vs `fallback`).
+
+Admin powers (moderation): list **all** hosts/forwards/users,
+suspend/unsuspend any host, delete any object, read the full event
+log. Admins act on top of §4, they do not replace owner/consumer
+trust — they police it.
 
 ### 3.2 tokens (PAT)
 
@@ -166,28 +185,69 @@ and, later, the panel activity feed.
 
 ## 4. Ownership and permission matrix
 
-| action | owner | consumer | other |
-|---|---|---|---|
-| create/delete/edit host (keys, consumer, endpoint) | ✔ | — | — |
-| create/delete forward on the host | — | ✔ | — |
-| create/delete DNS record on a forward | — | ✔ | — |
-| download host wg config | ✔ | ✔ | — |
-| download consumer wg config | ✔ | ✔ | — |
-| suspend host | ✔ | — | — |
+| action | owner | consumer | other | admin |
+|---|---|---|---|---|
+| create/delete/edit host (keys, consumer, endpoint) | ✔ | — | — | ✔ |
+| create/delete forward on the host | — | ✔ | — | ✔ |
+| create/delete DNS record on a forward | — | ✔ | — | ✔ |
+| download host wg config | ✔ | ✔ | — | ✔ |
+| download consumer wg config | ✔ | ✔ | — | ✔ |
+| suspend host | ✔ | — | — | ✔ |
+| list all users / hosts / events | — | — | — | ✔ |
 
 Rationale: the owner trusts *one* consumer with the tunnel; the
 consumer decides what of the owner's services is worth publishing.
 Both can fetch the WireGuard configs (they need them to bring up
-either side). Nobody else sees anything.
+either side). Admins are moderators: global visibility + override,
+never needed for the happy path. Nobody else sees anything.
+
+**How roles are acquired** (no self-service consumership):
+- **owner** — self-service: `POST /hosts` with a WG public key
+  (or have core generate the pair). You own what you created.
+- **consumer** — invitation only: the owner names another Authentik
+  user as consumer at host creation (or later via `PATCH`). The
+  named user becomes consumer of *that host*, nothing more.
+  `owner_id <> consumer_id` is enforced.
+- **admin** — Authentik group or break-glass creds (§3.1).
+- A user can be owner of their hosts and consumer of others' at
+  the same time. Roles are per-host relations, not profile flags.
+
+## 4a. Host provisioning flow (what "allocate port + IPs + config" means)
+
+`POST /hosts` (owner action) triggers, in one transaction:
+
+1. **Key generation** (transport plugin, §3.4a): for `wireguard` —
+   a host keypair + PSK + a dedicated berg-side keypair. The host
+   private key is returned **once** in the response body, stored
+   encrypted-at-rest; everything else is public keys.
+2. **Allocation from core-owned pools** (config bounds, tracked in
+   the `hosts` table, freed on delete):
+   - `listen_port` — one UDP port on berg per host (per-host
+     ports), e.g. 51820–51899;
+   - `tunnel_ipv4` / `tunnel_ipv6` — one /32 and one /128 from the
+     tunnel subnets.
+3. **Render** the host-side wg-quick config (see §5 example).
+4. Desired state is committed; the **reconcile loop** applies it
+   within one tick: adds the `[Peer]` to berg's `wg-dyatel.conf`
+   (`wg syncconf` — no bounce), opens `listen_port` in UFW with a
+   `Dyatel host=<name>` comment.
+
+The owner's remaining work: save the returned config as
+`/etc/wireguard/dyatel.conf` and `wg-quick up dyatel`. No manual
+`wg genkey`, no `wg set`, no Ansible in the data path.
 
 ## 5. API (REST, JSON, versioned under `/api/v1`)
 
 Served by `dyatel-core` on berg bound to `127.0.0.1:8100`
 (Infra port policy: application services > 8000 on loopback; IPv6
 `...::8001`-style alias assigned at deploy). TLS terminated by the
-existing **nginx** (Infra AGENTS.md §11) vhost `api.<base_domain>`;
-core DNS alias comes free via the wildcard record (§10 there — no
-per-service CNAME). Auth via PAT bearer or OIDC bearer (panel).
+existing **nginx** (Infra AGENTS.md §11) vhost
+`api.dyatel.test.nada.mu` (staging). **Do not rely on the apex
+wildcard `*.nada.mu`** — live check 2026-11-13: it resolves A to
+glacier (195.58.153.219), not berg, and has no AAAA. The vhost
+name gets an explicit DNS record at deploy time, inside the
+AGENTS.md §10 whitelist. Auth via PAT bearer, OIDC bearer
+(panel), or the break-glass admin login (§3.1).
 403 semantics: owner/consumer checks as §4.
 
 ```
