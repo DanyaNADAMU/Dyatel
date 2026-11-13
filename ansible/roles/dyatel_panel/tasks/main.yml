@@ -1,0 +1,8 @@
+---
+- name: Run dyatel_panel installation tasks
+  ansible.builtin.include_tasks: install.yml
+  when: dyatel_panel_state == "present"
+
+- name: Run dyatel_panel uninstallation tasks
+  ansible.builtin.include_tasks: uninstall.yml
+  when: dyatel_panel_state == "absent"

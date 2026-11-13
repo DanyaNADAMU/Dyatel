@@ -1,0 +1,52 @@
+---
+# dyatel_panel role defaults. The panel is a stateless static SPA (Vite
+# dist) served by nginx next to the core API, same-origin /api/v1 → no
+# CORS anywhere (RFC §10 Phase 3). Non-sensitive settings live here;
+# secrets bind to vault variables with safe fallbacks.
+
+# Lifecycle: present | absent (Infra §3 symmetric state parameter)
+dyatel_panel_state: "present"
+
+# Source: local Dyatel checkout on the control host; the SPA is built
+# there and the dist/ is shipped (same build-and-ship path as the core).
+dyatel_panel_local_src: "{{ playbook_dir }}/../.."
+
+# Domains: a single canonical origin for both the SPA and its same-origin
+# /api/v1 mount. The wildcard certificate covers exactly one label, so no
+# second-level api.<domain> alias is possible without a new cert.
+dyatel_panel_base_domain: "test.nada.mu"
+dyatel_panel_domain: "dyatel.{{ dyatel_panel_base_domain }}"
+
+# Static assets on the target
+dyatel_panel_webroot: "/var/www/dyatel-panel"
+
+# Upstream core daemon (loopback only, RFC §4a)
+dyatel_panel_core_listen_ip: "127.0.0.1"
+dyatel_panel_core_port: 8100
+
+# nginx layout (Infra §11: sites-available + sites-enabled symlink)
+dyatel_panel_vhost_name: "dyatel-panel"
+dyatel_panel_nginx_sites_available: "/etc/nginx/sites-available/{{ dyatel_panel_vhost_name }}.conf"
+dyatel_panel_nginx_sites_enabled: "/etc/nginx/sites-enabled/{{ dyatel_panel_vhost_name }}.conf"
+
+# Listeners. When the node sits behind the berg L4 SNI multiplexer
+# (nginx_behind_xray), the public 443 listener is dropped and only the
+# loopback bridge listener (8000, PROXY protocol v2) remains.
+dyatel_panel_nginx_http_port: 80
+dyatel_panel_nginx_https_port: 443
+dyatel_panel_nginx_behind_xray: true
+# WireGuard transport subnet allowed to carry PROXY protocol headers
+dyatel_panel_real_ip_from: "10.0.40.0/24"
+
+# Wildcard acme certificate already covers *.{{ base_domain }}
+dyatel_panel_ssl_cert_file: "/etc/ssl/acme/{{ dyatel_panel_base_domain }}/fullchain.pem"
+dyatel_panel_ssl_key_file: "/etc/ssl/acme/{{ dyatel_panel_base_domain }}/key.pem"
+
+# OIDC (baked into the SPA bundle at build time; SPAs are public
+# clients, so the client_id is not a secret in this context — the
+# confidential secret stays server-side in dyatel_core for introspection)
+dyatel_panel_oidc_authority: "https://auth.{{ dyatel_panel_base_domain }}"
+dyatel_panel_oidc_client_id: "{{ vault_dyatel_oidc_client_id | default('') }}"
+
+# Build tooling on the control host
+dyatel_panel_npm_bin: "npm"

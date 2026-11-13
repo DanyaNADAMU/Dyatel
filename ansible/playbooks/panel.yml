@@ -1,0 +1,9 @@
+---
+# ==============================================================================
+# Playbook: Deploy Dyatel Panel (static SPA + nginx vhost + API proxy)
+# ==============================================================================
+- name: Deploy Dyatel web panel
+  hosts: core
+  become: true
+  roles:
+    - role: dyatel_panel

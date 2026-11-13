@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Web panel (`web/`): React 18 + Vite + strict TypeScript SPA served as
+  static assets by nginx, talking to the core over the same-origin
+  `/api/v1/` mount (no CORS, no separate API hostname — the wildcard
+  certificate covers exactly one DNS label, so `api.<domain>` aliasing
+  is dropped entirely). Views for proxers (hosts, forwards, consumer
+  registration) and clients (forward list, rendered configs).
+- Authentication in the panel: Authentik OIDC authorization-code flow
+  (public client, `access_token` persisted in sessionStorage) with a
+  Basic fallback-admin login validated against `/me` before persisting.
+- Ansible role `dyatel_panel`: build-and-ship path mirroring
+  `dyatel_core` (npm build on the control host, dist to
+  `/var/www/dyatel-panel`), nginx vhost behind the berg L4 SNI
+  multiplexer (loopback bridge + PROXY protocol v2 real IPs), paired
+  `panel.yml` / `panel_uninstall.yml` playbooks with stale-asset pruning.
+- Authentik blueprint entry (Infra) for the `dyatel` application with a
+  single strict redirect URI `https://dyatel.<domain>/`; Vaultwarden sync
+  item for the core fallback admin points at the same origin.
+
 ## [v1.1.0] - 2026-11-13
 
 ### Added

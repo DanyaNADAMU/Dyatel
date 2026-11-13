@@ -1,0 +1,27 @@
+---
+# dyatel_panel uninstall. Symmetric to install.yml (Infra §3): remove the
+# vhost, its symlink and the static webroot. The core daemon and its
+# loopback API stay untouched — they belong to dyatel_core.
+
+- name: Disable Dyatel panel nginx vhost
+  ansible.builtin.file:
+    path: "{{ dyatel_panel_nginx_sites_enabled }}"
+    state: absent
+  notify: Reload nginx
+  tags: [config, uninstall]
+
+- name: Remove Dyatel panel nginx vhost
+  ansible.builtin.file:
+    path: "{{ dyatel_panel_nginx_sites_available }}"
+    state: absent
+  notify: Reload nginx
+  tags: [config, uninstall]
+
+- name: Remove panel static webroot
+  ansible.builtin.file:
+    path: "{{ dyatel_panel_webroot }}"
+    state: absent
+  tags: [build, uninstall]
+
+- name: Flush handlers after removal
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,130 @@
+---
+# dyatel_panel install. Ansible owns: dist build on the control host,
+# static webroot, nginx vhost. Runtime is stateless — nothing to enable
+# beyond an nginx reload (RFC §10 Phase 3).
+
+# --- Build the SPA on the control host (dist/ is the artifact) ---
+
+- name: Install panel npm dependencies on the control host
+  ansible.builtin.command:
+    cmd: "{{ dyatel_panel_npm_bin }} ci --no-audit --no-fund"
+    chdir: "{{ dyatel_panel_local_src }}/web"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  tags: [build]
+
+- name: Build panel dist on the control host  # noqa command-instead-of-module
+  ansible.builtin.command:
+    cmd: "{{ dyatel_panel_npm_bin }} run build"
+    chdir: "{{ dyatel_panel_local_src }}/web"
+  delegate_to: localhost
+  become: false
+  environment:
+    VITE_OIDC_AUTHORITY: "{{ dyatel_panel_oidc_authority }}"
+    VITE_OIDC_CLIENT_ID: "{{ dyatel_panel_oidc_client_id }}"
+  changed_when: false
+  tags: [build]
+
+# --- Static webroot ---
+
+- name: Ensure panel webroot exists
+  ansible.builtin.file:
+    path: "{{ dyatel_panel_webroot }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [config]
+
+- name: Copy panel dist into the webroot
+  ansible.builtin.copy:
+    src: "{{ dyatel_panel_local_src }}/web/dist/"
+    dest: "{{ dyatel_panel_webroot }}/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  tags: [build, config]
+
+- name: List current webroot top-level entries
+  ansible.builtin.find:
+    paths: "{{ dyatel_panel_webroot }}"
+    recurse: false
+    file_type: any
+  register: dyatel_panel_webroot_find
+  tags: [build, config]
+
+- name: List freshly built dist top-level entries
+  ansible.builtin.find:
+    paths: "{{ dyatel_panel_local_src }}/web/dist"
+    recurse: false
+    file_type: any
+  delegate_to: localhost
+  become: false
+  register: dyatel_panel_dist_find
+  tags: [build, config]
+
+- name: Remove stale webroot entries that no longer ship in the dist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ dyatel_panel_webroot_find.files | map(attribute='path') }}"
+  when: >
+    (item | basename) not in
+    (dyatel_panel_dist_find.files | map(attribute='path')
+     | map('basename') | list)
+  tags: [build, config]
+
+# --- nginx vhost ---
+
+- name: Ensure nginx is installed
+  ansible.builtin.package:
+    name: nginx
+    state: present
+  tags: [packages]
+
+- name: Deploy Dyatel panel nginx vhost
+  ansible.builtin.template:
+    src: nginx_dyatel_panel.conf.j2
+    dest: "{{ dyatel_panel_nginx_sites_available }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+  tags: [config]
+
+- name: Enable Dyatel panel nginx vhost
+  ansible.builtin.file:
+    src: "{{ dyatel_panel_nginx_sites_available }}"
+    dest: "{{ dyatel_panel_nginx_sites_enabled }}"
+    state: link
+  notify: Reload nginx
+  tags: [config]
+
+- name: Flush handlers to apply nginx configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify panel and API respond over the public chain
+  # Delegate to the control host so the probe walks the real ingress
+  # path: public DNS -> berg L4 SNI mux -> test bridge listener.
+  ansible.builtin.uri:
+    url: "https://{{ dyatel_panel_domain }}/"
+    return_content: false
+    status_code: [200]
+  delegate_to: localhost
+  become: false
+  register: dyatel_panel_check
+  retries: 3
+  delay: 2
+  until: dyatel_panel_check.status == 200
+  tags: [verify]
+
+- name: Verify core API responds through the panel vhost
+  ansible.builtin.uri:
+    url: "https://{{ dyatel_panel_domain }}/api/v1/status"
+    return_content: false
+    status_code: [401, 403]
+  delegate_to: localhost
+  become: false
+  tags: [verify]
