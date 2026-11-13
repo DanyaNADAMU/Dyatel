@@ -28,22 +28,22 @@ type Reconciler struct {
 }
 
 type HostStatus struct {
-	Name           string    `json:"name"`
-	Interface       string    `json:"interface"`
-	State          string    `json:"state"`
-	ListenPort      int       `json:"listen_port"`
-	Transport       string    `json:"transport"`
-	Endpoints       map[string]Endpoint `json:"endpoints"`
-	Drift           bool      `json:"drift"`
-	LastError       string    `json:"last_error,omitempty"`
+	Name       string              `json:"name"`
+	Interface  string              `json:"interface"`
+	State      string              `json:"state"`
+	ListenPort int                 `json:"listen_port"`
+	Transport  string              `json:"transport"`
+	Endpoints  map[string]Endpoint `json:"endpoints"`
+	Drift      bool                `json:"drift"`
+	LastError  string              `json:"last_error,omitempty"`
 }
 
 type Endpoint struct {
-	PublicKey      string `json:"public_key"`
-	Endpoint       string `json:"endpoint,omitempty"`
-	LastHandshake   string `json:"last_handshake,omitempty"`
-	TransferRx      int64  `json:"transfer_rx,omitempty"`
-	TransferTx      int64  `json:"transfer_tx,omitempty"`
+	PublicKey     string `json:"public_key"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	LastHandshake string `json:"last_handshake,omitempty"`
+	TransferRx    int64  `json:"transfer_rx,omitempty"`
+	TransferTx    int64  `json:"transfer_tx,omitempty"`
 }
 
 func New(cfg *config.Config, st *store.Store) *Reconciler {
@@ -134,7 +134,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 		}
 		if cfg == nil { // suspended: teardown iface, forwards pruned as orphan
 			if out, err := run(ctx, tool, "show", ifname); err == nil && out != "" {
-				stopAWGUnit(ctx, ifname) // userspace owner first, tun dies with it
+				stopAWGUnit(ctx, ifname)                        // userspace owner first, tun dies with it
 				_, _ = run(ctx, "ip", "link", "delete", ifname) // teardown suspended
 			}
 			statuses[ifname] = st
@@ -210,11 +210,18 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 				continue
 			}
 			chain := strings.TrimPrefix(line, "-N ")
-			if seen[strings.TrimPrefix(chain, "DYATEL-")] {
+			iface := strings.TrimSuffix(strings.TrimPrefix(chain, "DYATEL-"), "-po")
+			if seen[iface] {
 				continue
 			}
-			for { // drop all jumps to it, then the chain
-				if _, err := run(ctx, "iptables", "-t", "nat", "-D", "PREROUTING", "-j", chain); err != nil {
+			for { // drop jumps from both nat hooks, then the chain
+				gone := true
+				for _, h := range []string{"PREROUTING", "POSTROUTING"} {
+					if _, err := run(ctx, "iptables", "-t", "nat", "-D", h, "-j", chain); err == nil {
+						gone = false
+					}
+				}
+				if gone {
 					break
 				}
 			}
@@ -277,7 +284,11 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path s
 		if _, err := run(ctx, "ip", "link", "show", ifname); err == nil {
 			break
 		}
-		select { case <-ctx.Done(): return ctx.Err(); case <-time.After(100 * time.Millisecond): }
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	_, err := run(ctx, "bash", "-c",
 		fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
@@ -319,10 +330,24 @@ func (r *Reconciler) Status(ctx context.Context) map[string]any {
 func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.Host, fwds []store.Forward) {
 	tv := strings.TrimSuffix(h.TunnelIPv4, "/32")
 	natChain := "DYATEL-" + ifname
-	// per-iface nat chain, flushed and refilled each pass (idempotent, no-bounce
+	// src-NAT chain hangs off POSTROUTING (see the MASQUERADE rule below).
+	poChain := "DYATEL-" + ifname + "-po"
+	// per-iface nat chains, flushed and refilled each pass (idempotent, no-bounce
 	// for established flows — conntrack survives the same-rule rewrite)
-	_, _ = run(ctx, "iptables", "-t", "nat", "-N", natChain)
-	_, _ = run(ctx, "iptables", "-t", "nat", "-F", natChain)
+	for _, c := range []string{natChain, poChain} {
+		_, _ = run(ctx, "iptables", "-t", "nat", "-N", c)
+		_, _ = run(ctx, "iptables", "-t", "nat", "-F", c)
+	}
+	// src-NAT chain: forwarded packets keep the client's internet source
+	// IP after DNAT, which the host's wg cryptokey routing (AllowedIPs =
+	// gw /32 only) silently drops. MASQUERADE rewrites them to the gw
+	// tunnel IP; un-NAT on the way back rides conntrack. Match on the
+	// post-DNAT destination (-d): in POSTROUTING the conntrack original
+	// direction still carries the public IP (DNAT ran in PREROUTING), so
+	// --ctorigdst never matches, and --ctstatus DNAT is rejected by
+	// iptables-nft 1.8.9 ("Bad ctstatus").
+	_, _ = run(ctx, "iptables", "-t", "nat", "-A", poChain,
+		"-o", ifname, "-d", tv+"/32", "-j", "MASQUERADE")
 	want := map[string]bool{} // "port/proto" keys this host must expose
 	// Transport listen port is runtime state, so the core — not Ansible —
 	// owns its firewall opening (same want/prune cycle as forwards).
@@ -357,18 +382,27 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 			_, _ = run(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
 		}
 	}
-	// exactly one jump from PREROUTING: `iptables -C` reports via exit
-	// status only (stdout is empty), so err — not output — is the signal.
-	for {
-		if _, err := run(ctx, "iptables", "-t", "nat", "-C", "PREROUTING", "-j", natChain); err != nil {
-			break // no (more) jumps
+	// exactly one jump per chain: `iptables -C` reports via exit status
+	// only (stdout is empty), so err — not output — is the signal.
+	hook := func(c string) string {
+		if c == natChain {
+			return "PREROUTING"
 		}
-		if _, err := run(ctx, "iptables", "-t", "nat", "-D", "PREROUTING", "-j", natChain); err != nil {
-			break
-		}
+		return "POSTROUTING"
 	}
-	if _, err := run(ctx, "iptables", "-t", "nat", "-C", "PREROUTING", "-j", natChain); err != nil {
-		_, _ = run(ctx, "iptables", "-t", "nat", "-I", "PREROUTING", "-j", natChain)
+	for _, c := range []string{natChain, poChain} {
+		h := hook(c)
+		for {
+			if _, err := run(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
+				break // no (more) jumps
+			}
+			if _, err := run(ctx, "iptables", "-t", "nat", "-D", h, "-j", c); err != nil {
+				break
+			}
+		}
+		if _, err := run(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
+			_, _ = run(ctx, "iptables", "-t", "nat", "-I", h, "-j", c)
+		}
 	}
 }
 

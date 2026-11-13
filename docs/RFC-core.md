@@ -367,6 +367,15 @@ every 30s (and on POST /reconcile):
   proto {proto}` with comment `Dyatel host={name} fwd={id}` — same
   comment-driven reconciliation, so stale IPs are impossible by
   construction.
+- **POSTROUTING MASQ**: forwarded packets keep the client's internet
+  source IP after DNAT, which the host's wg cryptokey routing
+  (AllowedIPs = gw /32 only) silently drops. Core adds a per-iface
+  `-po` chain (`DYATEL-<ifname>-po`) hung off POSTROUTING with
+  `MASQUERADE -o <ifname> -d {tunnel_ip}/32`; the return path un-NATs
+  via conntrack. Matching on the post-DNAT destination is the only
+  correct form here: `--ctorigdst` still carries the pre-DNAT public
+  IP in POSTROUTING (never matches), and `--ctstatus DNAT` is rejected
+  by iptables-nft 1.8.9 ("Bad ctstatus").
 - **before.rules NAT**: core maintains a marked block
   `# BEGIN DYATEL CORE` … `# END` with DNAT rules only; v1.0.1-style
   blockinfile content is *removed* on first run (§8).
