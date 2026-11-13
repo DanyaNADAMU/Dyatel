@@ -19,8 +19,13 @@ tunnel topology declaratively. Desired state lives in Postgres
 The v1 Ansible roles are frozen at v1.0.1 and shrink to bootstrap-only.
 
 Nothing in this RFC introduces a new database server, an authentication
-stack, or a web framework: Postgres is the existing instance, identity
-is Authentik, DNS is the existing Cloudflare zone.
+stack, or a web framework: Postgres is the existing `postgresql@17-main`
+cluster on **glacier** (Infra AGENTS.md §15), identity is Authentik
+(also glacier), DNS is the existing Cloudflare zone, TLS is the
+existing **nginx** (AGENTS.md §11) — no new reverse proxy.
+
+Core language is **Go**, CLI is Go (cobra), panel is React+Vite+TS.
+Rationale in §12.
 
 ## 2. Requirements
 
@@ -86,6 +91,9 @@ CLI sends `Authorization: Bearer dyatel_…`.
 | tunnel_ipv4 | inet not null unique | `10.13.36.x/32` |
 | tunnel_ipv6 | inet not null unique | `fd00:36::x/128` |
 | endpoint | text | `host:port` the host dials in from (may be dynamic, i.e. null) |
+| transport | text not null default 'wireguard' | `wireguard \| amneziawg \| xray-vless` (§3.4a) |
+| listen_port | int not null unique | berg-side port, allocated by core per host |
+| params | jsonb not null default '{}' | transport-specific knobs |
 | keepalive | int not null default 25 | |
 | state | text not null default 'active' | `active \| suspended` |
 | created_at / updated_at | timestamptz | |
@@ -108,6 +116,34 @@ Constraint `owner_id <> consumer_id` enforces the trust pair.
 
 Unique `(host_id, public_port, proto)`. **Created by the consumer.**
 The consumer may only reference their own consumed host.
+
+### 3.4a transports (multi-tunnel support)
+
+Dyatel is transport-pluggable. Each **host** picks exactly one
+transport and gets a **dedicated listen port on berg**, allocated
+from a core-managed pool (like tunnel IPs):
+
+| transport | listen port pool | applier on berg | notes |
+|---|---|---|---|
+| `wireguard` | 51820–51899/udp | `wg syncconf` | default, phase 1 |
+| `amneziawg` | 51900–51999/udp | `awg syncconf` | phase 1b; same schema, AWG obfuscation fields in `hosts.params jsonb` |
+| `xray-vless` | 5200–5299/tcp | xray API/grpc | phase 2; host row carries UUID+TLS params; forward = routing rule |
+
+Schema impact: `hosts` gains `transport text not null default 'wireguard'`,
+`listen_port int not null unique` (allocated by core, freed on delete),
+and `params jsonb not null default '{}'` for transport-specific knobs.
+Each transport is a Go interface in core:
+
+```go
+type Transport interface {
+    RenderHostConfig(h Host) ([]byte, error)   // client-side conf
+    ApplyDesired(hosts []Host) error           // berg-side apply
+    Drift(hosts []Host) ([]Diff, error)        // parse live state
+}
+```
+
+Phasing: WG ships in phase 1, AWG right after (it is a wg fork —
+renderer differs, model identical), Xray is a later phase.
 
 ### 3.5 dns_records
 
@@ -146,9 +182,13 @@ either side). Nobody else sees anything.
 
 ## 5. API (REST, JSON, versioned under `/api/v1`)
 
-Served by `dyatel-core` on berg, TLS terminated by an existing reverse
-proxy (Caddy/Nginx — decided at deploy time), auth via PAT bearer or
-OIDC bearer (panel). 403 semantics: owner/consumer checks as §4.
+Served by `dyatel-core` on berg bound to `127.0.0.1:8100`
+(Infra port policy: application services > 8000 on loopback; IPv6
+`...::8001`-style alias assigned at deploy). TLS terminated by the
+existing **nginx** (Infra AGENTS.md §11) vhost `api.<base_domain>`;
+core DNS alias comes free via the wildcard record (§10 there — no
+per-service CNAME). Auth via PAT bearer or OIDC bearer (panel).
+403 semantics: owner/consumer checks as §4.
 
 ```
 POST   /api/v1/users/me                # idempotent provision on first auth
@@ -192,7 +232,7 @@ DNS        = 10.13.36.1
 PublicKey     = {gw_public_key}
 PresharedKey  = {wg_preshared_key}
 AllowedIPs    = 10.13.36.1/32, fd00:36::1/128
-Endpoint      = berg.example:{wg_listen_port}
+Endpoint      = berg.example:{listen_port}
 PersistentKeepalive = {keepalive}
 ```
 
@@ -213,7 +253,10 @@ every 30s (and on POST /reconcile):
 - **wg**: core owns `/etc/wireguard/wg-dyatel.conf` and applies with
   `wg syncconf wg-dyatel <(wg-quick strip wg-dyatel)` — no interface
   bounce, no dropped handshakes. Key files `chmod 600`, owned root.
-- **UFW ports**: `ufw allow proto tcp from any to any port {public_port}`
+  Each host listens on its **own** `listen_port` (§3.4a) — per-host
+  ports, no shared 51820.
+- **UFW ports**: each host's `listen_port` and each forward's
+  `public_port` get `ufw allow proto {tcp,udp} to any port {port}`
   with comment `Dyatel host={name}` — reconcile deletes rules whose
   comment host is absent from Postgres (reuses the v1.0.1 lesson:
   parse `ufw status`, never blind-add).
@@ -244,8 +287,9 @@ absent).
 - DB creds via systemd `EnvironmentFile=/etc/dyatel/core.env` 0600.
 - Cloudflare token: scoped **Zone:DNS:Edit** on the one zone only.
 - All secrets (gw private keys, PSKs) at rest in Postgres; database
-  lives on the same trusted instance as the rest of Infra —
-  `dyatel` database only, separate role, no cross-grants.
+  `dyatel` lives in the existing `postgresql@17-main` cluster on
+  **glacier**, reached by core (on berg) over the wireguard mesh —
+  separate role, no cross-grants to other DBs.
 - PAT tokens hashed (argon2id); a leaked token is revoke-not-rotate.
 - Audit events cover every mutating call (§3.6).
 
@@ -272,12 +316,19 @@ skeleton and gains new `dyatel_core` role:
 
 | task | owner |
 |---|---|
-| packages (wireguard-tools, postgres client, caddy) | Ansible |
+| packages (wireguard-tools, amneziawg-tools, postgres client) | Ansible |
 | sysctl forwarding drop-in | Ansible |
 | `/etc/wireguard` dir + `wg-quick@wg-dyatel` unit enable | Ansible |
 | core binary install, `dyatel-core.service`, env file | Ansible |
-| Postgres `dyatel` db + role + migrations | Ansible (one-shot) |
-| peers, UFW ports/routes, NAT, DNS | **core** (hands off) |
+| `dyatel` db + role on glacier `17-main` (one-shot) | Ansible |
+| nginx vhost `api.<base_domain>` → `127.0.0.1:8100`, cert | Ansible |
+| peers, transports, UFW ports/routes, NAT, DNS | **core** (hands off) |
+
+Postgres provisioning runs against **glacier** (where `17-main`
+lives); the rest of the role targets berg. Vault placeholders
+(`vault_dyatel_db_password`, `vault_dyatel_cloudflare_token`) are
+added by agent with `CHANGE_ME` values — the user fills real values
+via `ansible-vault edit` (Infra §6: agent never touches secrets).
 
 Infra repo conventions stay: symmetric uninstall, idempotent re-runs,
 `[firewall]`/`[uninstall]` tags. A `sleep`-based smoke test validates
@@ -288,18 +339,42 @@ that core answered `/status` after deploy.
 | phase | deliverable | done when |
 |---|---|---|
 | 0 (this doc) | RFC merged | user says ok |
-| 1 core | `cmd/dyatel-core`, migrations, reconcile, `/api/v1` | staging berg: create host+forward via SQL/curl → MC client connects through berg, second run 0 drift |
+| 1 core (wg) | `cmd/dyatel-core`, migrations, reconcile, `/api/v1`, WG transport | staging: create host+forward via SQL/curl → MC client connects through berg, second run 0 drift |
+| 1b core (awg) | AWG transport plugin | same, via AWG client |
 | 2 CLI | `dyatelctl login/expose/status`, PAT auth | full cycle from terminal, zero curl |
-| 3 web | SvelteKit panel + Authentik OIDC login | the "panel" the user asked for originally |
+| 3 web | React+Vite+TS panel (shadcn/ui, tanstack-query) + Authentik OIDC | the "panel" the user asked for originally |
+| later | `xray-vless` transport | host connects via VLESS |
 
 Phase 1 alone already satisfies "usable without UI" (§2.5).
 
 ## 11. Open questions
 
-1. Public berg port per host: one wg listen port for everyone (51820)
-   or per-host ports for nat-busting? — **Recommendation: single
-   51820; hosts are clients dialing in.**
-2. IPv6 endpoint dials: host config may also carry the berg IPv6 —
-   agreed implicitly, cheap. — **Accepted by default.**
-3. Panel domain for core API (`api.dyatel.example`?) — needed by
-   phase 1 end.
+1. ~~Public berg port per host~~ — **resolved: per-host ports** (§3.4a).
+2. ~~IPv6 endpoint dials~~ — moot: endpoint is a DNS name resolving
+   to both A and AAAA.
+3. DNS zone for forward records: Infra AGENTS.md §10 whitelists
+   Cloudflare automation to `test.nada.mu` / `lab.nada.mu` only;
+   apex `nada.mu` is forbidden. Staging publishes under
+   `test.nada.mu`. For production either (a) extend the whitelist
+   with a dedicated `dyatel.nada.mu` zone, (b) publish under
+   `lab.nada.mu`, or (c) skip DNS records entirely (wildcard
+   `*.nada.mu` already points at berg — a forward name works
+   without any CF call). **Recommendation: (c) for phase 1** —
+   DNS records become optional sugar, CF token needed only later.
+4. Base domain for the core API vhost: `api.<base_domain>` where
+   base_domain follows the Infra per-host parameter (staging
+   `test.nada.mu` → `api.test.nada.mu`; production decision when
+   berg gets its vhost).
+
+## 12. Stack decision
+
+| layer | choice | why |
+|---|---|---|
+| core | **Go** (chi, pgx v5, golang-migrate, cloudflare-go, x/crypto argon2) | single static binary, first-class `wg`/exec ecosystem, fastest path to a correct reconcile loop; Rust rejected: lower iteration speed for a CRUD+loop daemon |
+| CLI | **Go** (cobra, carapace, OpenAPI-generated client) | shares types with core, single binary for user's servers |
+| web | **React + Vite + TypeScript** (shadcn/ui, tanstack-query, oidc-client-ts) | static dist served by existing nginx, stateless, auth fully outsourced to Authentik |
+
+Go vs Rust was raised: for a control plane that is 90% DB + REST +
+`wg syncconf` calls, Go's development speed and pgx/chi maturity
+outweigh Rust's runtime-safety edge; the daemon is memory-safe
+enough behind nginx, UFW, and a Postgres role.
