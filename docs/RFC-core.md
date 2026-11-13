@@ -442,17 +442,24 @@ that core answered `/status` after deploy.
 | phase | deliverable | done when |
 |---|---|---|
 | 0 (this doc) | RFC merged | user says ok |
-| 1 core (wg) | `cmd/dyatel-core`, migrations, reconcile, `/api/v1`, WG transport | `test` VM: create host+forward via SQL/curl → MC client connects through the VM, second run 0 drift |
+| 1 core (wg) | `cmd/dyatel-core`, migrations, reconcile, `/api/v1`, WG transport | **done**: node `berg` reconciles host `gsix-tunnel`; consumer LXC `gsix` handshakes and pings `10.13.36.1` + `fd00:36::1` end-to-end |
 | 1b core (awg) | AWG transport plugin | same, via AWG client |
 | 2 CLI | `dyatelctl login/expose/status`, PAT auth | full cycle from terminal, zero curl |
 | 3 web | React+Vite+TS panel (shadcn/ui, tanstack-query) + Authentik OIDC | the "panel" the user asked for originally |
 | later | `xray-vless` transport | host connects via VLESS |
 
-Deployment topology: **staging = the `test` Incus VM on berg**
-(postgres clone, core, nginx all inside, zone `dyatel.test.nada.mu`);
-**production = core on berg + `dyatel` DB on glacier `17-main`**,
-promoted through the Infra release gate (main + tag + changelog).
-Testbed-first and idempotency (`changed=0`) rules apply throughout.
+Deployment topology: **one binary, two core daemons, one shared
+Postgres**. Staging/production split is by node column, not by host:
+`test` Incus VM on berg runs node `test` (API 127.0.0.1:8100, db over the
+local socket), berg itself runs node `berg` (API 127.0.0.1:8100, db over
+incusbr0 to the test VM, scram-sha-256). Port/IP allocators are global
+(wg 51820–51899/udp, awg 51900–51999/udp, xray 5200–5299/tcp; tunnel nets
+`10.13.36.0/24` + `fd00:36::/64`, core `.1`, gw `.2`, consumer `.3`).
+`DYATEL_NODE` selects which hosts a node reconciles; `/status` reports
+per-node state. The existing `dyatel` DB on test is reused ("we do not
+own Postgres"). The legacy `dyatel_gateway` on test is decommissioned
+(frozen v1.0.1). Testbed-first and idempotency (`changed=0`) rules apply
+throughout.
 
 Phase 1 alone already satisfies "usable without UI" (§2.5).
 
