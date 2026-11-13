@@ -1,0 +1,27 @@
+[Unit]
+Description=Dyatel core control plane (API + reconcile)
+Documentation=https://nada.mu
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ dyatel_core_user }}
+Group={{ dyatel_core_group }}
+EnvironmentFile={{ dyatel_core_env_file }}
+ExecStart={{ dyatel_core_binary }}
+Restart=on-failure
+RestartSec=5
+# Core manipulates wg/iptables/ufw at runtime (RFC §9): needs root.
+# Hardening that still allows netlink + nftables:
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=false
+ProtectControlGroups=false
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

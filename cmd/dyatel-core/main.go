@@ -29,6 +29,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer st.Pool.Close()
+	if err := st.MigrateUp(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
 
 	rc := reconcile.New(cfg, st)
 	go rc.Run(ctx)

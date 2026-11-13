@@ -1,0 +1,9 @@
+---
+# ==============================================================================
+# Playbook: Deploy Dyatel Core (API + reconcile loop)
+# ==============================================================================
+- name: Deploy Dyatel Core control plane
+  hosts: core
+  become: true
+  roles:
+    - role: dyatel_core
