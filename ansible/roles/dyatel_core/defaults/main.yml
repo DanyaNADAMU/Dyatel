@@ -67,6 +67,9 @@ dyatel_core_db_user: "dyatel"
 dyatel_core_db_password: "{{ vault_dyatel_db_password | default('CHANGE_ME') }}"
 dyatel_core_db_host: "/var/run/postgresql"
 dyatel_core_db_pool_max: 4
+# Remote-node daemons (berg) connect to the shared PG over TCP; the role
+# then must not try to provision a local cluster on the target.
+dyatel_core_db_manage: true
 
 # Cloudflare (RFC §3.5 dns_records)
 dyatel_core_cloudflare_token: "{{ vault_dyatel_cloudflare_token | default('') }}"

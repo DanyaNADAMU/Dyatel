@@ -60,6 +60,7 @@
         else '17'
       }}
   tags: [config, database]
+  when: dyatel_core_db_manage | bool
 
 - name: Ensure dyatel PostgreSQL user exists
   community.postgresql.postgresql_user:
@@ -70,6 +71,7 @@
   become: true
   become_user: postgres
   tags: [config, database]
+  when: dyatel_core_db_manage | bool
 
 - name: Ensure dyatel PostgreSQL database exists
   community.postgresql.postgresql_db:
@@ -80,6 +82,7 @@
   become: true
   become_user: postgres
   tags: [config, database]
+  when: dyatel_core_db_manage | bool
 
 - name: Configure pg_hba.conf client authentication rule for dyatel socket
   community.postgresql.postgresql_pg_hba:
@@ -91,6 +94,7 @@
     state: present
   notify: Reload postgresql
   tags: [config, database]
+  when: dyatel_core_db_manage | bool
 
 - name: Flush handlers to apply database authentication configuration
   ansible.builtin.meta: flush_handlers
