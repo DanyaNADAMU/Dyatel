@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Gateway role now reconciles UFW route rules: forward rules pointing at
+  obsolete client IPs (left over from deployments with different
+  `dyatel_gateway_*_client_ip` overrides) are removed automatically on every
+  run of the WireGuard and AmneziaWG transport modules.
+- Gateway teardown (`dyatel_gateway_state: absent`) now removes all Dyatel
+  UFW route rules, including stale ones, instead of leaving them behind.
+
 ## [v1.0.0] - 2026-11-10
 
 ### Added

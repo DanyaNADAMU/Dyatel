@@ -48,5 +48,26 @@
   failed_when: false
   notify: Reload ufw
 
+- name: Query current UFW ruleset for Dyatel route rule teardown
+  ansible.builtin.command:
+    cmd: ufw status
+  changed_when: false
+  register: dyatel_gateway_uninstall_ufw_status
+
+- name: Remove all Dyatel forward route rules from UFW
+  community.general.ufw:
+    route: true
+    rule: allow
+    to_ip: "{{ item.0 }}"
+    to_port: "{{ item.1 }}"
+    proto: "{{ item.2 }}"
+    delete: true
+  loop: "{{ dyatel_gateway_uninstall_ufw_status.stdout | regex_findall(dyatel_gateway_uninstall_route_regex) }}"
+  failed_when: false
+  notify: Reload ufw
+  vars:
+    dyatel_gateway_uninstall_route_regex: >-
+      (?m)^(\S+)\s+([0-9]+)/(\w+)\s+ALLOW FWD\s+\S+(?:\s+\(v6\))?\s+# Dyatel forward
+
 - name: Flush handlers to ensure clean firewall state
   ansible.builtin.meta: flush_handlers
