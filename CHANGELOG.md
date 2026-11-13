@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `dyatelctl` CLI (cobra + carapace completions): `me`, `status`, `hosts`
+  (`list|create|show|rm|state|register-consumer-key|config proxer|client`),
+  `forwards` (`list|create|rm`) — the first real consumer of the
+  `/api/v1` daemon API, proving the core surface is usable without
+  daemon internals. `--json` passthrough, `--out FILE` (mode 0600) for
+  client configs, `DYATEL_*` env fallbacks.
+- `internal/client`: thin HTTP transport for the daemon API (Bearer PAT
+  wins over Basic fallback admin); `APIError` surfaces daemon
+  plain-text error bodies verbatim; no imports of reconcile/store/auth.
+- Ansible role `dyatel_core` ships `dyatelctl` alongside the core binary
+  (same checksum-gated build-and-ship path).
+- Proxer-side UFW contract for AmneziaWG replies, documented in RFC §6
+  after the live awg-smoke run (gw replies source from the gw LAN
+  address; consumer-side UFW must allow them from both paths).
+
+### Fixed
+- Empty API collections serialize as `[]` instead of `null`.
+- Reconcile masquerades forwarded traffic to the gw tunnel IP
+  (per-iface `DYATEL-<ifname>-po` chains off POSTROUTING).
+- Consumer-only AWG hosts render without berg-side key material;
+  userspace `amneziawg-go` fallback and tool dispatch in `Status`.
+
 ## [v1.0.1] - 2026-11-13
 
 ### Fixed
