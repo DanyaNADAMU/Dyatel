@@ -153,7 +153,11 @@ func (r *Reconciler) pass(ctx context.Context) {
 				st.LastError = fmt.Sprintf("bring-up: %v", err)
 			}
 		} else if _, err := run(ctx, "bash", "-c",
-			fmt.Sprintf("wg syncconf %s <(wg-quick strip %s)", ifname, path)); err != nil {
+			fmt.Sprintf("wg syncconf %s <(wg-quick strip %s) && ip link set %s up",
+				ifname, path, ifname)); err != nil {
+			// syncconf keeps keys/peers without bouncing the tunnel; the
+			// explicit link-up covers interfaces whose socket failed to bind
+			// at creation (port conflict) and were left DOWN.
 			st.LastError = fmt.Sprintf("syncconf: %v", err)
 		}
 		// routes: proxer tunnel net reachable via this iface
@@ -259,6 +263,14 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	_, _ = run(ctx, "iptables", "-t", "nat", "-N", natChain)
 	_, _ = run(ctx, "iptables", "-t", "nat", "-F", natChain)
 	want := map[string]bool{} // "port/proto" keys this host must expose
+	// Transport listen port is runtime state, so the core — not Ansible —
+	// owns its firewall opening (same want/prune cycle as forwards).
+	if h.Transport == "wireguard" || h.Transport == "amneziawg" {
+		key := fmt.Sprintf("%d/udp", h.ListenPort)
+		want[key] = true
+		_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+			"comment", "Dyatel host="+h.Name)
+	}
 	for _, f := range fwds {
 		key := fmt.Sprintf("%d/%s", f.PublicPort, f.Proto)
 		want[key] = true
@@ -340,8 +352,9 @@ func genKeypair() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	// wg clamps
-	priv[31] = 127
+	// wg clamps (b[31] = (b[31] & 127) | 64) — the stored private key must
+	// stay bit-identical to the one the public key was derived from.
+	priv[31] &= 127
 	priv[31] |= 64
 	return base64Encode(priv[:]), base64Encode(pub[:]), nil
 }
