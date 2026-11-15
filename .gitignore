@@ -18,7 +18,9 @@ __pycache__/
 
 # Staging & private inventories and keys
 *.staging.*
+*.production.*
 ansible/inventory.staging.*
+ansible/inventory.production.*
 *.key
 *.conf
 *.retry

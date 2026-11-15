@@ -1,0 +1,29 @@
+---
+all:
+  children:
+    core:
+      # Dyatel core control plane node (API + reconcile loop)
+      hosts:
+        core-01:
+          ansible_host: core.example.com
+          ansible_port: 22
+          ansible_user: root
+          ansible_become: true
+          base_domain: example.com
+          dyatel_core_node: "core-01"
+          dyatel_core_db_host: "/var/run/postgresql"
+          dyatel_core_db_manage: true
+          dyatel_core_xray_version: "26.10.31"
+          dyatel_panel_nginx_behind_xray: false
+          dyatel_panel_base_domain: "example.com"
+    node:
+      # Dyatel consumer node
+      hosts:
+        node-01:
+          ansible_host: node.example.com
+          ansible_port: 22
+          ansible_user: root
+          ansible_become: true
+          dyatel_node_enable_wireguard: false
+          dyatel_node_enable_amneziawg: true
+          dyatel_node_awg_manage_interface: false

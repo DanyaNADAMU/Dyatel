@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **MIT License (`LICENSE`)**: Added standard permissive open-source license.
+- **Example YAML Inventory (`ansible/inventory.example.yml`)**: Added sanitized reference inventory with placeholder domain and connection variables.
+
+### Changed
+- **Commit Signing Keys (`.allowed_signers`)**: Restricted `.allowed_signers` strictly to the primary OpenSSH signing key (`danya-git`, `SHA256:zUV6/z1GQKLalAt6WIBOIwgS5TdaQovUVkR+7ItwbZc`), removing secondary and infrastructure keys.
+- **Privacy & Inventory Sanitization**: Untracked private production inventory from version control, updated `.gitignore` to match all production and staging inventory patterns.
+- **Release Automation (`scripts/release-check.sh`)**: Hardened SemVer tag detection with `--match 'v*'` to prevent collisions with OpenTimestamps proof tags.
+- **Documentation**: Expanded bilingual navigation guides in `docs/en/` and `docs/ru/`.
+
 ## [v2.1.0] - 2026-11-13
 
 ### Added
