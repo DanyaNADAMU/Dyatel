@@ -180,9 +180,23 @@ func (r *Reconciler) pass(ctx context.Context) {
 			// at creation (port conflict) and were left DOWN.
 			st.LastError = fmt.Sprintf("syncconf: %v", err)
 		}
-		// routes: proxer tunnel net reachable via this iface
+		// routes: endpoint tunnel IPs reachable via this iface. Both sides
+		// need explicit /32 (v4) and /128 (v6) routes: without them replies
+		// to a dial-in endpoint leave via the default route and die on the
+		// LAN (observed on test: handshake OK both ways, echo replies
+		// routed via enp5s0 -> bridge gateway, consumer sees silence).
 		_, _ = run(ctx, "ip", "route", "replace",
 			strings.TrimSuffix(h.TunnelIPv4, "/32")+"/32", "dev", ifname)
+		_, _ = run(ctx, "ip", "-6", "route", "replace",
+			strings.TrimSuffix(h.TunnelIPv6, "/128")+"/128", "dev", ifname)
+		if h.ConsumerTunnelIPv4 != nil {
+			_, _ = run(ctx, "ip", "route", "replace",
+				strings.TrimSuffix(*h.ConsumerTunnelIPv4, "/32")+"/32", "dev", ifname)
+		}
+		if h.ConsumerTunnelIPv6 != nil {
+			_, _ = run(ctx, "ip", "-6", "route", "replace",
+				strings.TrimSuffix(*h.ConsumerTunnelIPv6, "/128")+"/128", "dev", ifname)
+		}
 		st.Endpoints["proxer"] = Endpoint{PublicKey: h.WGPublicKey}
 		if h.ConsumerWGPublicKey != nil {
 			st.Endpoints["consumer"] = Endpoint{PublicKey: *h.ConsumerWGPublicKey}

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.1.2] - 2026-11-22
+
+### Fixed
+- **Consumer tunnel routes in the reconcile loop (`internal/reconcile`)**: the core installed only the proxer-side route (`ip route replace <host-tunnel-ip> dev <iface>`), so replies to a dial-in consumer left via the default route and died on the LAN — on the test bed the consumer saw a healthy handshake in both directions with every echo request silently lost (`ip route get <consumer-ip>` resolved via `enp5s0`). The loop now installs explicit /32 and /128 routes for the proxer and consumer tunnel IPs of every active host, making the core↔consumer data path real (handshake + echo verified on test).
+
+### Changed
+- `ots-cron.yml` switched to the shared catalog stub (`Workflows/ots.yml@v1` + explicit `permissions: contents: write`), eliminating the inline OpenTimestamps job drift; note for the operator: the `BTC_GETBLOCK_KEY` secret is expected in the repository settings (the oracle degrades to single-source with a warning when it is absent).
+
+### Scope note (MVP rollout)
+- Production rollout (glacier) ships core + panel; the proxer-side attach (berg node toolkit + forwards) and the panel-driven host management are the next milestone — the API surface is unchanged, so clients registered today keep working.
+
 ## [v2.1.1] - 2026-11-15
 
 ### Added
