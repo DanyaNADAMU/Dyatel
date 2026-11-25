@@ -5,6 +5,7 @@ This directory contains system documentation, operational guides, and design spe
 ## Documentation Index
 
 - **[RFC-core Specification](../RFC-core.md)**: Architectural contract for the Dyatel Core daemon, state reconciliation, transport engines (WireGuard, AmneziaWG, Xray), and REST API.
+- **[Attach Your Machine](attach-your-machine.md)**: Step-by-step proxer and client setup, panel/CLI/Tier-0 paths, firewall contract and troubleshooting.
 - **[Architecture Overview](architecture/README.md)**: Network topology diagrams and ingress/egress traversal mechanics.
 - **[Architecture Decision Records (ADR)](adr/README.md)**: Architectural decisions and evolution records.
 - **[Product Roadmap & Plans](plans/README.md)**: Planned milestones, phase developments, and features.
