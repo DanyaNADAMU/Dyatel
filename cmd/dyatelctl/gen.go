@@ -121,26 +121,23 @@ func genHost(cmd *cobra.Command) (store.Host, *config.Config, error) {
 	// Berg tunnel IP: default first usable host of the net.
 	listenIP, _ := f.GetString("listen-ip")
 	if listenIP == "" {
-		listenIP = c.CoreListenIP
+		listenIP = c.GatewayIP("wireguard")
 	}
 
 	// Proxer tunnel defaults skip berg's own address: the daemon allocates
 	// from the same nets but never hands out CoreListenIP, so gen must not
 	// either — a colliding /32 breaks routing both sides.
+	// First host address of the host block: .1-.HostIPMin-1 are the gateway
+	// and reserved infrastructure, so an offline render must start where the
+	// daemon's allocator starts, never at .2.
 	t4, _ := f.GetString("tunnel4")
 	if t4 == "" {
-		ip := nextIP(net.ParseIP(strings.Split(c.TunnelIPv4Net, "/")[0]).To4(), 1)
-		if ip.String() == c.CoreListenIP {
-			ip = nextIP(ip, 1)
-		}
+		ip := nextIP(net.ParseIP(strings.Split(c.NetV4("wireguard"), "/")[0]).To4(), c.HostIPMin)
 		t4 = ip.String() + "/32"
 	}
 	t6, _ := f.GetString("tunnel6")
 	if t6 == "" {
-		ip := nextIP(net.ParseIP(strings.Split(c.TunnelIPv6Net, "/")[0]), 1)
-		if ip.String() == gwIPv6Base(c) {
-			ip = nextIP(ip, 1)
-		}
+		ip := nextIP(net.ParseIP(strings.Split(c.NetV6("wireguard"), "/")[0]), c.HostIPMin)
 		t6 = ip.String() + "/128"
 	}
 
@@ -212,7 +209,7 @@ func genHost(cmd *cobra.Command) (store.Host, *config.Config, error) {
 
 // gwIPv6Base mirrors the renderer's gwIPv6: berg's v6 is the net base +1.
 func gwIPv6Base(c *config.Config) string {
-	return nextIP(net.ParseIP(strings.Split(c.TunnelIPv6Net, "/")[0]), 1).String()
+	return nextIP(net.ParseIP(strings.Split(c.NetV6("wireguard"), "/")[0]), 1).String()
 }
 
 // nextIP returns ip advanced by n (1 = next address).

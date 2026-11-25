@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"strings"
 	"text/template"
 
@@ -82,13 +81,17 @@ func (w *WG) render(h store.Host, tpl *template.Template) ([]byte, error) {
 		Keepalive  int
 		IsAWG      bool
 		AWG        string
+		MTU        int
 		PrivateKey string
 	}{
-		Host:       h,
-		Endpoint:   w.cfg.PublicEndpointHost,
-		ListenIP:   w.cfg.CoreListenIP,
-		GWIPv6:     gwIPv6(w.cfg),
-		Keepalive:  h.Keepalive,
+		Host:      h,
+		Endpoint:  w.cfg.PublicEndpointHost,
+		ListenIP:  w.cfg.GatewayIP(h.Transport),
+		GWIPv6:    w.cfg.GatewayIPv6(h.Transport),
+		Keepalive: h.Keepalive,
+		// AWG obfuscation eats headroom and IPv6 has a hard 1280-byte floor,
+		// so the inner MTU is pinned for it instead of guessed from the underlay.
+		MTU:        w.cfg.AWGMTU,
 		IsAWG:      h.Transport == "amneziawg",
 		AWG:        awg,
 		PrivateKey: PrivateKeyPlaceholder,
@@ -103,6 +106,9 @@ func (w *WG) render(h store.Host, tpl *template.Template) ([]byte, error) {
 const hostTplStr = `[Interface]
 Address = {{.Host.TunnelIPv4}}, {{.Host.TunnelIPv6}}
 PrivateKey = {{.PrivateKey}}
+{{- if .IsAWG }}
+MTU = {{.MTU}}
+{{- end }}
 {{- if .IsAWG }}
 {{.AWG}}
 {{- end }}
@@ -119,6 +125,9 @@ PersistentKeepalive = {{.Keepalive}}
 const clientTplStr = `[Interface]
 Address = {{.Host.ConsumerTunnelIPv4}}, {{.Host.ConsumerTunnelIPv6}}
 PrivateKey = {{.PrivateKey}}
+{{- if .IsAWG }}
+MTU = {{.MTU}}
+{{- end }}
 {{- if .IsAWG }}
 {{.AWG}}
 {{- end }}
@@ -145,10 +154,11 @@ func (w *WG) RenderGWConfig(h store.Host) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("# Managed by dyatel-core. Do not edit.\n")
 	b.WriteString("[Interface]\n")
-	b.WriteString(fmt.Sprintf("Address = %s/32, %s/128\n", w.cfg.CoreListenIP, gwIPv6(w.cfg)))
+	b.WriteString(fmt.Sprintf("Address = %s/32, %s/128\n", w.cfg.GatewayIP(h.Transport), w.cfg.GatewayIPv6(h.Transport)))
 	b.WriteString(fmt.Sprintf("ListenPort = %d\n", h.ListenPort))
 	b.WriteString(fmt.Sprintf("PrivateKey = %s\n", h.GWPrivateKey))
 	if h.Transport == "amneziawg" {
+		b.WriteString(fmt.Sprintf("MTU = %d\n", w.cfg.AWGMTU))
 		// same obfuscation as the peers: berg must junk-pad identically
 		p, err := ParseAWGParams(h.Params)
 		if err != nil {
@@ -180,14 +190,4 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-func gwIPv6(c *config.Config) string {
-	if _, cidr, err := net.ParseCIDR(c.TunnelIPv6Net); err == nil {
-		ip := make(net.IP, len(cidr.IP))
-		copy(ip, cidr.IP)
-		ip[len(ip)-1] = 1
-		return ip.String()
-	}
-	return "fd00:36::1"
 }

@@ -95,6 +95,52 @@ func (r *Reconciler) PrepareConsumer(ctx context.Context, h *store.Host, pubKey,
 	return nil
 }
 
+// ensureFromDisk is the degraded-mode data plane: with no database the
+// desired state is the last rendered config set on disk, so every wgd-*/awd-*
+// interface that exists as a file but not as a device is brought up. It never
+// removes or reprograms anything — that authority belongs to a live control
+// plane — it only restores service.
+func (r *Reconciler) ensureFromDisk(ctx context.Context) {
+	dir := filepath.Dir(r.cfg.WGConfigPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		ifname := strings.TrimSuffix(name, ".conf")
+		transport, ok := transportFromIfname(ifname)
+		if !ok {
+			continue
+		}
+		// A live interface is left exactly as it is: no syncconf without a
+		// database, because there is no desired state to converge to.
+		if _, err := run(ctx, "ip", "link", "show", ifname); err == nil {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := r.bringUp(ctx, ifname, wireguard.ToolName(transport),
+			wireguard.LinkType(transport), path, transport); err != nil {
+			r.lastErr(fmt.Errorf("degraded bring-up %s: %w", ifname, err))
+		}
+	}
+}
+
+// transportFromIfname maps the interface prefix back to its transport: the
+// renderer tags awd- for amneziawg and wgd- for wireguard (RFC §3.4a).
+func transportFromIfname(ifname string) (string, bool) {
+	switch {
+	case strings.HasPrefix(ifname, "awd-"):
+		return "amneziawg", true
+	case strings.HasPrefix(ifname, "wgd-"):
+		return "wireguard", true
+	}
+	return "", false
+}
+
 // Run blocks until ctx is done, reconciling every tick or on Trigger.
 func (r *Reconciler) Run(ctx context.Context) {
 	d := time.Duration(r.cfg.ReconcileEverySec) * time.Second
@@ -169,7 +215,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 			continue
 		}
 		if _, err := run(ctx, "ip", "link", "show", ifname); err != nil {
-			if err := r.bringUp(ctx, ifname, tool, linkType, path); err != nil {
+			if err := r.bringUp(ctx, ifname, tool, linkType, path, h.Transport); err != nil {
 				st.LastError = fmt.Sprintf("bring-up: %v", err)
 			}
 		} else if _, err := run(ctx, "bash", "-c",
@@ -326,18 +372,18 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 // none) awd-* falls back to userspace amneziawg-go owning a tun_iface, mirroring
 // the vendored awg-quick fallback. Userspace needs no addresses — utun is
 // point-to-point and the interface lives only as long as the unit.
-func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path string) error {
+func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, transport string) error {
 	if linkType == "wireguard" {
 		_, err := run(ctx, "bash", "-c",
 			fmt.Sprintf("ip link add %s type wireguard && %s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
-				ifname, tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+				ifname, tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 		return err
 	}
 	// amneziawg: kernel module first, userspace fallback (awg-quick pattern)
 	if _, err := run(ctx, "ip", "link", "add", ifname, "type", "amneziawg"); err == nil {
 		_, err := run(ctx, "bash", "-c",
 			fmt.Sprintf("%s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
-				tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+				tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 		return err
 	}
 	// No kernel module: transient unit starts userspace amneziawg-go owning
@@ -368,7 +414,7 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path s
 	}
 	_, err := run(ctx, "bash", "-c",
 		fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
-			tool, ifname, path, r.cfg.CoreListenIP, ifname, strings.TrimSuffix(r.gwV6(), ""), ifname, ifname))
+			tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 	return err
 }
 
@@ -445,6 +491,42 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 			"-p", f.Proto, "--dport", fmt.Sprint(f.PublicPort),
 			"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", tv, f.TargetPort))
 	}
+	// IPv6 ingress: a v6 player cannot be DNATed into a v4 tunnel address, so
+	// the same forward exists as a parallel v6 rule against the host's inner
+	// v6 address. Both families ride the same dual-stack tunnel; NAT stays
+	// inside its own family (v6 DNAT + v6 MASQUERADE), no NAT64 involved.
+	if tv6 := strings.TrimSuffix(h.TunnelIPv6, "/128"); tv6 != "" {
+		nat6 := natChain + "6"
+		po6 := poChain + "6"
+		for _, c := range []string{nat6, po6} {
+			_, _ = run(ctx, "ip6tables", "-t", "nat", "-N", c)
+			_, _ = run(ctx, "ip6tables", "-t", "nat", "-F", c)
+		}
+		_, _ = run(ctx, "ip6tables", "-t", "nat", "-A", po6,
+			"-o", ifname, "-d", tv6+"/128", "-j", "MASQUERADE")
+		for _, f := range fwds {
+			_, _ = run(ctx, "ip6tables", "-t", "nat", "-A", nat6,
+				"-p", f.Proto, "--dport", fmt.Sprint(f.PublicPort),
+				"-j", "DNAT", "--to-destination", fmt.Sprintf("[%s]:%d", tv6, f.TargetPort))
+		}
+		for _, c := range []string{nat6, po6} {
+			h := "PREROUTING"
+			if c == po6 {
+				h = "POSTROUTING"
+			}
+			for {
+				if _, err := run(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
+					break
+				}
+				if _, err := run(ctx, "ip6tables", "-t", "nat", "-D", h, "-j", c); err != nil {
+					break
+				}
+			}
+			if _, err := run(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
+				_, _ = run(ctx, "ip6tables", "-t", "nat", "-I", h, "-j", c)
+			}
+		}
+	}
 	// drop stale ufw rules this host no longer wants (deleted forwards)
 	pruneUFW(ctx, r.cfg.UFWBinary, h.Name, want)
 	// exactly one jump per chain: `iptables -C` reports via exit status
@@ -489,7 +571,7 @@ func pruneUFW(ctx context.Context, ufw, name string, want map[string]bool) {
 }
 
 func (r *Reconciler) gwV6() string {
-	if _, cidr, err := parseCIDR(r.cfg.TunnelIPv6Net); err == nil {
+	if _, cidr, err := parseCIDR(r.cfg.NetV6("wireguard")); err == nil {
 		ip := make(net.IP, len(cidr.IP))
 		copy(ip, cidr.IP)
 		ip[len(ip)-1] = 1

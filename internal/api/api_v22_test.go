@@ -347,3 +347,104 @@ func TestReconcileTrigger(t *testing.T) {
 		t.Fatalf("reconcile response: %s", rec.Body)
 	}
 }
+
+// TestHostAddressPinning covers the operator-facing half of the new
+// addressing model: a pinned address/port is honoured (so a peer keeps a
+// memorable number), the reserved gateway block is rejected, and a taken
+// pin fails loudly instead of silently landing on another peer's address.
+func TestHostAddressPinning(t *testing.T) {
+	s := testServer(t)
+	owner := "pin-owner-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "@example.test"
+	consumerSub := "pin-consumer-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "@example.test"
+
+	rec := do(t, s, "GET", "/api/v1/me", consumerSub, "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("provision consumer: %d", rec.Code)
+	}
+	var consumer struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &consumer)
+
+	// Pick a free octet and port: the smoke database is shared with the client
+	// integration test and keeps rows from earlier runs, so a hard-coded pin
+	// would flake on a parallel package run.
+	usedIP, usedPort := map[string]bool{}, map[string]bool{}
+	rec = do(t, s, "GET", "/api/v1/hosts", "", "correcthorse", nil)
+	var existing []struct {
+		TunnelIPv4 string `json:"tunnel_ipv4"`
+		ListenPort int    `json:"listen_port"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &existing)
+	for _, h := range existing {
+		usedIP[h.TunnelIPv4] = true
+		usedPort[strconv.Itoa(h.ListenPort)] = true
+	}
+	octet, port := 0, 0
+	for i := 16; i < 200; i++ {
+		if !usedIP["10.66.66."+strconv.Itoa(i)+"/32"] && !usedPort[strconv.Itoa(20000+i)] {
+			octet, port = i, 20000+i
+			break
+		}
+	}
+	if octet == 0 {
+		t.Fatal("no free octet in the smoke database")
+	}
+	suffix := strconv.Itoa(octet)
+	create := func(name string, body map[string]any) *httptest.ResponseRecorder {
+		body["name"] = name
+		body["wg_public_key"] = "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s="
+		body["transport"] = "wireguard"
+		body["consumer_id"] = consumer.ID
+		return do(t, s, "POST", "/api/v1/hosts", owner, "", body)
+	}
+
+	// Pinned pair is honoured exactly.
+	rec = create("pin-a-"+suffix, map[string]any{
+		"preferred_ipv4": "10.66.66." + strconv.Itoa(octet),
+		"preferred_ipv6": "fd66:66::" + strconv.FormatInt(int64(octet), 16),
+		"preferred_port": port,
+	})
+	if rec.Code != 200 && rec.Code != 201 {
+		t.Fatalf("create pinned host: %d: %s", rec.Code, rec.Body)
+	}
+	var pinned struct {
+		ID         string `json:"id"`
+		TunnelIPv4 string `json:"tunnel_ipv4"`
+		TunnelIPv6 string `json:"tunnel_ipv6"`
+		ListenPort int    `json:"listen_port"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { do(t, s, "DELETE", "/api/v1/hosts/"+pinned.ID, owner, "", nil) })
+	wantV4 := "10.66.66." + strconv.Itoa(octet) + "/32"
+	wantV6 := "fd66:66::" + strconv.FormatInt(int64(octet), 16) + "/128"
+	if pinned.TunnelIPv4 != wantV4 || pinned.TunnelIPv6 != wantV6 || pinned.ListenPort != port {
+		t.Fatalf("pin not honoured: %+v", pinned)
+	}
+
+	// Same pin again must fail: two peers cannot share an address/port on a node.
+	if rec := create("pin-b-"+suffix, map[string]any{
+		"preferred_ipv4": "10.66.66." + strconv.Itoa(octet), "preferred_port": port + 1,
+	}); rec.Code < 400 {
+		t.Fatalf("duplicate pinned address accepted: %d %s", rec.Code, rec.Body)
+	}
+	if rec := create("pin-c-"+suffix, map[string]any{
+		"preferred_port": port,
+	}); rec.Code < 400 {
+		t.Fatalf("duplicate pinned port accepted: %d %s", rec.Code, rec.Body)
+	}
+	// The gateway block is reserved: .5 must be refused.
+	if rec := create("pin-d-"+suffix, map[string]any{
+		"preferred_ipv4": "10.66.66.5",
+	}); rec.Code < 400 {
+		t.Fatalf("reserved gateway address accepted: %d %s", rec.Code, rec.Body)
+	}
+	// An address outside the transport's network is refused.
+	if rec := create("pin-e-"+suffix, map[string]any{
+		"preferred_ipv4": "10.99.99.16",
+	}); rec.Code < 400 {
+		t.Fatalf("out-of-network address accepted: %d %s", rec.Code, rec.Body)
+	}
+}

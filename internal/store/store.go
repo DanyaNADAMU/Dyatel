@@ -22,9 +22,8 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := pool.Ping(ctx); err != nil {
-		return nil, err
-	}
+	// pgxpool connects lazily: a data-plane node must boot (and keep its
+	// tunnels) while the control-plane database is unreachable.
 	return &Store{Pool: pool}, nil
 }
 
@@ -64,12 +63,15 @@ type Host struct {
 }
 
 type Forward struct {
-	ID         uuid.UUID `json:"id"`
-	HostID     uuid.UUID `json:"host_id"`
-	PublicPort int       `json:"public_port"`
-	TargetPort int       `json:"target_port"`
-	Proto      string    `json:"proto"`
-	Label      string    `json:"label"`
+	ID     uuid.UUID `json:"id"`
+	HostID uuid.UUID `json:"host_id"`
+	// Node is the gateway that binds the public port (denormalised from
+	// hosts so per-node public-port uniqueness is expressible).
+	Node       string `json:"node"`
+	PublicPort int    `json:"public_port"`
+	TargetPort int    `json:"target_port"`
+	Proto      string `json:"proto"`
+	Label      string `json:"label"`
 }
 
 func (s *Store) UserBySub(ctx context.Context, sub string) (*User, error) {
@@ -211,7 +213,7 @@ func (s *Store) DeleteHost(ctx context.Context, id uuid.UUID) error {
 
 func (s *Store) ForwardsByHost(ctx context.Context, hostID uuid.UUID) ([]Forward, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, host_id, public_port, target_port, proto, label
+		`SELECT id, host_id, node, public_port, target_port, proto, label
 		 FROM forwards WHERE host_id=$1 ORDER BY public_port`, hostID)
 	if err != nil {
 		return nil, err
@@ -220,7 +222,7 @@ func (s *Store) ForwardsByHost(ctx context.Context, hostID uuid.UUID) ([]Forward
 	var out []Forward
 	for rows.Next() {
 		var f Forward
-		if err := rows.Scan(&f.ID, &f.HostID, &f.PublicPort, &f.TargetPort, &f.Proto, &f.Label); err != nil {
+		if err := rows.Scan(&f.ID, &f.HostID, &f.Node, &f.PublicPort, &f.TargetPort, &f.Proto, &f.Label); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -230,7 +232,7 @@ func (s *Store) ForwardsByHost(ctx context.Context, hostID uuid.UUID) ([]Forward
 
 func (s *Store) Forwards(ctx context.Context) ([]Forward, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, host_id, public_port, target_port, proto, label FROM forwards ORDER BY host_id, public_port`)
+		`SELECT id, host_id, node, public_port, target_port, proto, label FROM forwards ORDER BY host_id, public_port`)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +240,7 @@ func (s *Store) Forwards(ctx context.Context) ([]Forward, error) {
 	var out []Forward
 	for rows.Next() {
 		var f Forward
-		if err := rows.Scan(&f.ID, &f.HostID, &f.PublicPort, &f.TargetPort, &f.Proto, &f.Label); err != nil {
+		if err := rows.Scan(&f.ID, &f.HostID, &f.Node, &f.PublicPort, &f.TargetPort, &f.Proto, &f.Label); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -247,10 +249,13 @@ func (s *Store) Forwards(ctx context.Context) ([]Forward, error) {
 }
 
 func (s *Store) CreateForward(ctx context.Context, f *Forward) error {
+	// node is derived from the host: the public port is bound on the gateway
+	// that owns the host, and the unique index is (node, public_port, proto).
 	return s.Pool.QueryRow(ctx,
-		`INSERT INTO forwards (host_id, public_port, target_port, proto, label)
-		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		f.HostID, f.PublicPort, f.TargetPort, f.Proto, f.Label).Scan(&f.ID)
+		`INSERT INTO forwards (host_id, node, public_port, target_port, proto, label)
+		 SELECT $1, h.node, $2,$3,$4,$5 FROM hosts h WHERE h.id=$1
+		 RETURNING id, node`,
+		f.HostID, f.PublicPort, f.TargetPort, f.Proto, f.Label).Scan(&f.ID, &f.Node)
 }
 
 func (s *Store) DeleteForward(ctx context.Context, id uuid.UUID) error {
@@ -273,13 +278,13 @@ func (s *Store) Event(ctx context.Context, userID uuid.UUID, authMethod, action,
 }
 
 // UsedTunnelIPs / UsedPorts let the allocator avoid taken values.
-func (s *Store) UsedTunnelIPs(ctx context.Context) (map[string]bool, map[string]bool, error) {
+func (s *Store) UsedTunnelIPs(ctx context.Context, node string) (map[string]bool, map[string]bool, error) {
 	rows, err := s.Pool.Query(ctx,
 		// host() strips the netmask: inet::text keeps "/32" and would
 		// never match the bare IPs the allocator compares against.
 		`SELECT host(tunnel_ipv4)::text, host(tunnel_ipv6)::text,
 		        host(consumer_tunnel_ipv4)::text, host(consumer_tunnel_ipv6)::text
-		 FROM hosts`)
+		 FROM hosts WHERE node=$1`, node)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -457,8 +462,8 @@ func (s *Store) UpdateHostFields(ctx context.Context, id uuid.UUID, endpoint *st
 	return nil
 }
 
-func (s *Store) UsedPorts(ctx context.Context) (map[int]bool, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT listen_port FROM hosts WHERE state='active' OR state='suspended'`)
+func (s *Store) UsedPorts(ctx context.Context, node string) (map[int]bool, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT listen_port FROM hosts WHERE node=$1`, node)
 	if err != nil {
 		return nil, err
 	}

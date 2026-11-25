@@ -10,26 +10,28 @@ import (
 
 func testWG() *WG {
 	return New(&config.Config{
-		TunnelIPv4Net:      "10.13.36.0/24",
-		TunnelIPv6Net:      "fd00:36::/64",
+		TunnelIPv4NetWG:    "10.66.66.0/24",
+		TunnelIPv4NetAWG:   "10.77.77.0/24",
+		TunnelIPv6NetWG:    "fd66:66::/64",
+		TunnelIPv6NetAWG:   "fd77:77::/64",
 		PublicEndpointHost: "dyatel.test.nada.mu",
-		CoreListenIP:       "10.13.36.1",
+		CoreListenIP:       "10.66.66.1",
 	})
 }
 
 func testHost(name, transport string) store.Host {
 	return store.Host{
-		Name:          name,
-		Transport:     transport,
-		State:         "active",
-		ListenPort:    51820,
-		WGPublicKey:   "pUbKey1234567890pUbKey1234567890pU=",
-		GWPrivateKey:  "GAMyPr1vateKeyNeverSeen",
-		GWPublicKey:   "gWpub",
+		Name:           name,
+		Transport:      transport,
+		State:          "active",
+		ListenPort:     51820,
+		WGPublicKey:    "pUbKey1234567890pUbKey1234567890pU=",
+		GWPrivateKey:   "GAMyPr1vateKeyNeverSeen",
+		GWPublicKey:    "gWpub",
 		WGPreSharedKey: "pSk1234567890pSk1234567890pSk1234=",
-		TunnelIPv4:    "10.13.36.2/32",
-		TunnelIPv6:    "fd00:36::2/128",
-		Keepalive:     25,
+		TunnelIPv4:     "10.66.66.2/32",
+		TunnelIPv6:     "fd66:66::2/128",
+		Keepalive:      25,
 	}
 }
 
@@ -53,10 +55,10 @@ func TestRenderProxerConfig(t *testing.T) {
 	}
 	cfg := string(cfgB)
 	for _, want := range []string{
-		"Address = 10.13.36.2/32, fd00:36::2/128",
+		"Address = 10.66.66.2/32, fd66:66::2/128",
 		"PrivateKey = " + PrivateKeyPlaceholder,
 		"Endpoint = dyatel.test.nada.mu:51820",
-		"AllowedIPs = 10.13.36.1/32, fd00:36::1/128",
+		"AllowedIPs = 10.66.66.1/32, fd66:66::1/128",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("missing %q in:\n%s", want, cfg)
@@ -75,7 +77,7 @@ func TestRenderClientConfigGatesOnConsumer(t *testing.T) {
 	}
 	pub := "cPubKey1234567890cPubKey1234567890cU="
 	h.ConsumerWGPublicKey = &pub
-	v4, v6 := "10.13.36.3/32", "fd00:36::3/128"
+	v4, v6 := "10.66.66.3/32", "fd66:66::3/128"
 	h.ConsumerTunnelIPv4, h.ConsumerTunnelIPv6 = &v4, &v6
 	cfgB, err := w.RenderClientConfig(h)
 	if err != nil {
@@ -83,8 +85,8 @@ func TestRenderClientConfigGatesOnConsumer(t *testing.T) {
 	}
 	s := string(cfgB)
 	for _, want := range []string{
-		"Address = 10.13.36.3/32, fd00:36::3/128",
-		"AllowedIPs = 10.13.36.2/32, fd00:36::2/128",
+		"Address = 10.66.66.3/32, fd66:66::3/128",
+		"AllowedIPs = 10.66.66.2/32, fd66:66::2/128",
 		PrivateKeyPlaceholder,
 	} {
 		if !strings.Contains(s, want) {
@@ -111,9 +113,9 @@ func TestRenderGWConfigPeers(t *testing.T) {
 	}
 	cfg := string(cfgB)
 	for _, want := range []string{
-		"Address = 10.13.36.1/32, fd00:36::1/128",
+		"Address = 10.66.66.1/32, fd66:66::1/128",
 		"ListenPort = 51820", "Table = off",
-		"AllowedIPs = 10.13.36.2, fd00:36::2",
+		"AllowedIPs = 10.66.66.2, fd66:66::2",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("missing %q in:\n%s", want, cfg)
@@ -162,7 +164,7 @@ func TestRenderClientConfigAWG(t *testing.T) {
 	h := testHost("myhost", "amneziawg")
 	pub := "cPubKey1234567890cPubKey1234567890cU="
 	h.ConsumerWGPublicKey = &pub
-	v4, v6 := "10.13.36.3/32", "fd00:36::3/128"
+	v4, v6 := "10.66.66.3/32", "fd66:66::3/128"
 	h.ConsumerTunnelIPv4, h.ConsumerTunnelIPv6 = &v4, &v6
 	cfgB, err := w.RenderClientConfig(h)
 	if err != nil {

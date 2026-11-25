@@ -61,6 +61,10 @@ var hostsCreateCmd = &cobra.Command{
 		pubkey, _ := cmd.Flags().GetString("wg-pubkey")
 		keepalive, _ := cmd.Flags().GetInt("keepalive")
 		paramsRaw, _ := cmd.Flags().GetString("params")
+		node, _ := cmd.Flags().GetString("node")
+		pref4, _ := cmd.Flags().GetString("preferred-ipv4")
+		pref6, _ := cmd.Flags().GetString("preferred-ipv6")
+		prefPort, _ := cmd.Flags().GetInt("preferred-port")
 
 		// Client-side validation mirrors the daemon's checks so obvious
 		// mistakes fail before a network round trip.
@@ -83,12 +87,16 @@ var hostsCreateCmd = &cobra.Command{
 			return err
 		}
 		raw, err := c.Do(http.MethodPost, "/hosts/", client.CreateHostRequest{
-			Name:        name,
-			WGPublicKey: pubkey,
-			Transport:   transport,
-			ConsumerID:  consumerID,
-			Keepalive:   keepalive,
-			Params:      params,
+			Name:          name,
+			WGPublicKey:   pubkey,
+			Transport:     transport,
+			ConsumerID:    consumerID,
+			Keepalive:     keepalive,
+			Params:        params,
+			Node:          node,
+			PreferredIPv4: pref4,
+			PreferredIPv6: pref6,
+			PreferredPort: prefPort,
 		})
 		if err != nil {
 			return err
@@ -304,6 +312,10 @@ func init() {
 	hostsCreateCmd.Flags().String("wg-pubkey", "", "44-char wg public key (optional at creation)")
 	hostsCreateCmd.Flags().Int("keepalive", 0, "persistent keepalive seconds (default: daemon applies 25)")
 	hostsCreateCmd.Flags().String("params", "", "raw transport params (amneziawg junk header), valid json")
+	hostsCreateCmd.Flags().String("node", "", "gateway node to host this host on (default: this daemon; admin only)")
+	hostsCreateCmd.Flags().String("preferred-ipv4", "", "pin the tunnel IPv4 (e.g. 10.66.66.6)")
+	hostsCreateCmd.Flags().String("preferred-ipv6", "", "pin the tunnel IPv6 (e.g. fd66:66::6)")
+	hostsCreateCmd.Flags().Int("preferred-port", 0, "pin the transport listen port (e.g. 6666)")
 
 	hostsRegisterKeyCmd.Flags().String("wg-pubkey", "", "44-char wg public key; read from stdin when omitted")
 

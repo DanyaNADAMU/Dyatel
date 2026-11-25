@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 )
@@ -20,9 +21,24 @@ type Config struct {
 	// hosts.node = Node (multi-node, one shared PG, RFC §4).
 	Node string
 
-	// Berg-side tunnel network: per-host /32 and /128 are carved out of it.
-	TunnelIPv4Net string // e.g. 10.13.36.0/24
-	TunnelIPv6Net string // e.g. fd00:36::/64
+	// Berg-side tunnel networks, one pair per transport: WG is the default and
+	// inherits the legacy single-pair settings, AWG may live in its own space
+	// (a separate subnet keeps the two transports' AllowedIPs and reply routes
+	// unambiguous when one peer dials several gateways).
+	TunnelIPv4NetWG  string // e.g. 10.66.66.0/24
+	TunnelIPv6NetWG  string // e.g. fd66:66::/64
+	TunnelIPv4NetAWG string // e.g. 10.77.77.0/24
+	TunnelIPv6NetAWG string // e.g. fd77:77::/64
+
+	// Host part allocation bounds inside a tunnel network: .1-.15 are reserved
+	// for gateways and infrastructure, hosts are carved from HostIPMin upward.
+	HostIPMin int
+	HostIPMax int
+
+	// AmneziaWG inner MTU. Obfuscation (junk packets + magic headers) eats
+	// headroom, and IPv6 has a hard 1280-byte floor (RFC 8200), so AWG pins the
+	// inner MTU instead of letting wg-quick guess from the underlay.
+	AWGMTU int
 
 	// Per-host listen port pool per transport.
 	PortPoolWGMin   int
@@ -56,6 +72,14 @@ type Config struct {
 	DNSZone string // e.g. test.nada.mu (records under it, CF later)
 }
 
+func Load() (*Config, error) {
+	c := load()
+	if c.DatabaseDSN == "" {
+		return nil, fmt.Errorf("DYATEL_DB_DSN is required")
+	}
+	return c, nil
+}
+
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -72,12 +96,47 @@ func envInt(key string, def int) int {
 	return def
 }
 
-func Load() (*Config, error) {
-	c := load()
-	if c.DatabaseDSN == "" {
-		return nil, fmt.Errorf("DYATEL_DB_DSN is required")
+// NetV4 returns the tunnel IPv4 network for a transport. Unknown transports
+// fall back to the WireGuard pair: they share the same addressing model.
+func (c *Config) NetV4(transport string) string {
+	if transport == "amneziawg" {
+		return c.TunnelIPv4NetAWG
 	}
-	return c, nil
+	return c.TunnelIPv4NetWG
+}
+
+// NetV6 returns the tunnel IPv6 network for a transport.
+func (c *Config) NetV6(transport string) string {
+	if transport == "amneziawg" {
+		return c.TunnelIPv6NetAWG
+	}
+	return c.TunnelIPv6NetWG
+}
+
+// GatewayIP is the gateway address inside the transport's IPv4 network: the
+// first host address (.1). Networks are per transport, so .1 is unambiguous
+// even when one peer dials the same gateway over both transports.
+func (c *Config) GatewayIP(transport string) string {
+	_, cidr, err := net.ParseCIDR(c.NetV4(transport))
+	if err != nil {
+		return c.CoreListenIP
+	}
+	ip := make(net.IP, len(cidr.IP))
+	copy(ip, cidr.IP)
+	ip[len(ip)-1] = 1
+	return ip.String()
+}
+
+// GatewayIPv6 is the gateway address inside the transport's IPv6 network.
+func (c *Config) GatewayIPv6(transport string) string {
+	_, cidr, err := net.ParseCIDR(c.NetV6(transport))
+	if err != nil {
+		return "fd66:66::1"
+	}
+	ip := make(net.IP, len(cidr.IP))
+	copy(ip, cidr.IP)
+	ip[len(ip)-1] = 1
+	return ip.String()
 }
 
 func load() *Config {
@@ -86,8 +145,13 @@ func load() *Config {
 		DatabaseDSN:          env("DYATEL_DB_DSN", ""),
 		ReconcileEverySec:    envInt("DYATEL_RECONCILE_EVERY", 15),
 		Node:                 env("DYATEL_NODE", "test"),
-		TunnelIPv4Net:        env("DYATEL_TUNNEL_V4", "10.13.36.0/24"),
-		TunnelIPv6Net:        env("DYATEL_TUNNEL_V6", "fd00:36::/64"),
+		TunnelIPv4NetWG:      env("DYATEL_TUNNEL_V4_WG", env("DYATEL_TUNNEL_V4", "10.66.66.0/24")),
+		TunnelIPv6NetWG:      env("DYATEL_TUNNEL_V6_WG", env("DYATEL_TUNNEL_V6", "fd66:66::/64")),
+		TunnelIPv4NetAWG:     env("DYATEL_TUNNEL_V4_AWG", env("DYATEL_TUNNEL_V4_WG", env("DYATEL_TUNNEL_V4", "10.66.66.0/24"))),
+		TunnelIPv6NetAWG:     env("DYATEL_TUNNEL_V6_AWG", env("DYATEL_TUNNEL_V6_WG", env("DYATEL_TUNNEL_V6", "fd66:66::/64"))),
+		HostIPMin:            envInt("DYATEL_HOST_IP_MIN", 16),
+		HostIPMax:            envInt("DYATEL_HOST_IP_MAX", 250),
+		AWGMTU:               envInt("DYATEL_AWG_MTU", 1280),
 		PortPoolWGMin:        envInt("DYATEL_WG_PORTS_MIN", 51820),
 		PortPoolWGMax:        envInt("DYATEL_WG_PORTS_MAX", 51899),
 		PortPoolAWGMin:       envInt("DYATEL_AWG_PORTS_MIN", 51900),
