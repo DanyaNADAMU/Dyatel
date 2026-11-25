@@ -1,4 +1,4 @@
-import type { Forward, Host, Me } from "./types";
+import type { EventItem, Forward, Host, Me, Token, UserInfo } from "./types";
 import { authHeader, getCred } from "./session";
 
 export class ApiError extends Error {
@@ -77,4 +77,22 @@ export const api = {
   proxerConfig: (id: string) => req<string>(`/hosts/${id}/config/proxer`),
   clientConfig: (id: string) => req<string>(`/hosts/${id}/config/client`),
   status: () => req<Record<string, unknown>>("/status"),
+  // Post-creation host edits: endpoint, keepalive and the invited consumer.
+  patchHost: (
+    id: string,
+    b: { endpoint?: string; keepalive?: number; consumer_id?: string },
+  ) =>
+    req<Host>(`/hosts/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(b),
+    }),
+  reconcile: () => req<{ reconcile_queued: boolean }>("/reconcile", { method: "POST" }),
+  // Token lifecycle: the secret comes back only in create.
+  tokens: () => req<Token[]>("/tokens/"),
+  createToken: (label: string) =>
+    req<Token>("/tokens/", { method: "POST", body: JSON.stringify({ label }) }),
+  revokeToken: (id: string) => req<void>(`/tokens/${id}`, { method: "DELETE" }),
+  // Invitation directory: the panel never asks a human for a raw UUID.
+  users: (q = "") => req<UserInfo[]>(`/users${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  events: (limit = 100) => req<EventItem[]>(`/events?limit=${limit}`),
 };

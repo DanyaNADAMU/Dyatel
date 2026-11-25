@@ -38,3 +38,29 @@ export interface Forward {
   proto: "tcp" | "udp";
   label: string;
 }
+
+export interface Token {
+  id: string;
+  label: string;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  /** Present only in the create response: the one time the secret is shown. */
+  token?: string;
+}
+
+export interface UserInfo {
+  id: string;
+  display_name: string;
+  is_admin: boolean;
+}
+
+export interface EventItem {
+  id: number;
+  at: string;
+  user_id?: string | null;
+  auth_method: "oidc" | "pat" | "fallback";
+  action: string;
+  object_type: string;
+  object_id: string;
+}
