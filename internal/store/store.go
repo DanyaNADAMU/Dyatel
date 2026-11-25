@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,10 +29,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 }
 
 type User struct {
-	ID           uuid.UUID
-	AuthentikSub string
-	DisplayName  string
-	IsAdmin      bool
+	ID uuid.UUID `json:"id"`
+	// AuthentikSub is an internal identity key: it never rides the wire,
+	// so a leaked API response cannot be replayed against Authentik.
+	AuthentikSub string `json:"-"`
+	DisplayName  string `json:"display_name"`
+	IsAdmin      bool   `json:"is_admin"`
 }
 
 // The daemon serializes Host/Forward directly, so these json tags ARE the
@@ -296,6 +300,161 @@ func (s *Store) UsedTunnelIPs(ctx context.Context) (map[string]bool, map[string]
 		}
 	}
 	return v4, v6, rows.Err()
+}
+
+// Token is a personal access token row. SecretHash never leaves the store:
+// the wire type in api/ exposes metadata only, and the plaintext secret
+// exists exactly once, in the create response.
+type Token struct {
+	ID         uuid.UUID  `json:"id"`
+	Label      string     `json:"label"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+func (s *Store) CreateToken(ctx context.Context, userID uuid.UUID, label string, hash []byte) (*Token, error) {
+	t := &Token{Label: label}
+	err := s.Pool.QueryRow(ctx,
+		`INSERT INTO tokens (user_id, secret_hash, label) VALUES ($1,$2,$3)
+		 RETURNING id, created_at`, userID, hash, label).Scan(&t.ID, &t.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *Store) TokensByUser(ctx context.Context, userID uuid.UUID) ([]Token, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, label, created_at, last_used_at, revoked_at
+		 FROM tokens WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Token{}
+	for rows.Next() {
+		var t Token
+		if err := rows.Scan(&t.ID, &t.Label, &t.CreatedAt, &t.LastUsedAt, &t.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RevokeToken marks a token dead instead of deleting it: the audit trail
+// keeps the revocation time, and a leaked token is revoke-not-rotate.
+func (s *Store) RevokeToken(ctx context.Context, userID, id uuid.UUID) error {
+	ct, err := s.Pool.Exec(ctx,
+		`UPDATE tokens SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`,
+		id, userID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchToken records usage for the token that actually authenticated, not
+// every token the user owns (the previous user-level UPDATE poisoned the
+// last_used_at of untouched tokens).
+func (s *Store) TouchToken(ctx context.Context, id uuid.UUID) {
+	_, _ = s.Pool.Exec(ctx, `UPDATE tokens SET last_used_at=now() WHERE id=$1`, id)
+}
+
+// Users lists users for panel invitations. Admins see everyone; a regular
+// caller gets the same list (names and ids are already public to any
+// authenticated user who can invite a consumer by name).
+func (s *Store) Users(ctx context.Context, q string) ([]User, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, authentik_sub, display_name, is_admin FROM users
+		 WHERE $1 = '' OR display_name ILIKE '%'||$1||'%'
+		 ORDER BY display_name LIMIT 100`, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.AuthentikSub, &u.DisplayName, &u.IsAdmin); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// Event is one audit row as exposed over the API.
+type Event struct {
+	ID         int64           `json:"id"`
+	At         time.Time       `json:"at"`
+	UserID     *uuid.UUID      `json:"user_id,omitempty"`
+	AuthMethod string          `json:"auth_method"`
+	Action     string          `json:"action"`
+	ObjectType string          `json:"object_type"`
+	ObjectID   string          `json:"object_id"`
+	Detail     json.RawMessage `json:"detail"`
+}
+
+// Events returns the newest audit rows. An empty userID means "everyone"
+// (admin view); otherwise the caller sees only their own actions.
+func (s *Store) Events(ctx context.Context, userID *uuid.UUID, limit int) ([]Event, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT id, at, user_id, auth_method, action, object_type, object_id, detail
+		 FROM events WHERE $1::uuid IS NULL OR user_id = $1
+		 ORDER BY id DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.At, &e.UserID, &e.AuthMethod, &e.Action,
+			&e.ObjectType, &e.ObjectID, &e.Detail); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// UpdateHostFields applies the PATCH surface: endpoint, keepalive and the
+// invited consumer are the only mutable knobs after creation.
+//
+// Changing the consumer MUST drop their registered BYOK key and tunnel IPs:
+// otherwise the previous consumer keeps a live [Peer] on the gateway with the
+// same preshared key, and the new consumer inherits a keypair they do not own.
+// The CASE expressions read the pre-update row, so the comparison is against
+// the outgoing consumer.
+func (s *Store) UpdateHostFields(ctx context.Context, id uuid.UUID, endpoint *string, keepalive *int, consumer *uuid.UUID) error {
+	ct, err := s.Pool.Exec(ctx,
+		`UPDATE hosts SET
+		   endpoint    = COALESCE($2, endpoint),
+		   keepalive   = COALESCE($3, keepalive),
+		   consumer_id = COALESCE($4::uuid, consumer_id),
+		   consumer_wg_public_key =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_wg_public_key END,
+		   consumer_tunnel_ipv4 =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_tunnel_ipv4 END,
+		   consumer_tunnel_ipv6 =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_tunnel_ipv6 END,
+		   updated_at  = now()
+		 WHERE id=$1`, id, endpoint, keepalive, consumer)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) UsedPorts(ctx context.Context) (map[int]bool, error) {

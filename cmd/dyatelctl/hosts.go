@@ -162,6 +162,55 @@ var hostsStateCmd = &cobra.Command{
 	},
 }
 
+var hostsEditCmd = &cobra.Command{
+	Use:   "edit HOSTID",
+	Short: "Edit endpoint, keepalive or the invited consumer",
+	Long: "PATCHes the mutable host knobs. BYOK keys are immutable: rotating a\n" +
+		"key means delete-and-create, since a half-rotated pair has no valid\n" +
+		"state. With no flags the command is a no-op probe.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var (
+			endpoint  *string
+			keepalive *int
+			consumer  *string
+		)
+		if cmd.Flags().Changed("endpoint") {
+			v, _ := cmd.Flags().GetString("endpoint")
+			endpoint = &v
+		}
+		if cmd.Flags().Changed("keepalive") {
+			v, _ := cmd.Flags().GetInt("keepalive")
+			keepalive = &v
+		}
+		if cmd.Flags().Changed("consumer-id") {
+			v, _ := cmd.Flags().GetString("consumer-id")
+			consumer = &v
+		}
+		if endpoint == nil && keepalive == nil && consumer == nil {
+			return fmt.Errorf("nothing to change: pass --endpoint, --keepalive or --consumer-id")
+		}
+		c, err := clientFrom(cmd)
+		if err != nil {
+			return err
+		}
+		h, err := c.PatchHost(args[0], endpoint, keepalive, consumer)
+		if err != nil {
+			return err
+		}
+		return output(cmd, mustJSON(h), func(w io.Writer) error {
+			printKV(w, []kv{
+				{"id", h.ID},
+				{"name", h.Name},
+				{"endpoint", dash(h.Endpoint)},
+				{"keepalive", fmt.Sprint(h.Keepalive)},
+				{"consumer_id", h.ConsumerID},
+			})
+			return nil
+		})
+	},
+}
+
 var hostsRegisterKeyCmd = &cobra.Command{
 	Use:   "register-consumer-key HOSTID",
 	Short: "Register the consumer's wg public key for a host",
@@ -260,8 +309,12 @@ func init() {
 
 	hostsConfigCmd.Flags().String("out", "", "write the config to FILE (mode 0600) instead of stdout")
 
+	hostsEditCmd.Flags().String("endpoint", "", "dial-in endpoint recorded for the host")
+	hostsEditCmd.Flags().Int("keepalive", 0, "persistent keepalive seconds")
+	hostsEditCmd.Flags().String("consumer-id", "", "invite (or replace) the consumer by user id")
+
 	hostsCmd.AddCommand(hostsListCmd, hostsCreateCmd, hostsShowCmd, hostsRmCmd,
-		hostsStateCmd, hostsRegisterKeyCmd, hostsConfigCmd)
+		hostsStateCmd, hostsEditCmd, hostsRegisterKeyCmd, hostsConfigCmd)
 
 	// Shell completion: choices for enum flags, nothing for opaque IDs.
 	carapace.Gen(hostsCreateCmd).FlagCompletion(carapace.ActionMap{

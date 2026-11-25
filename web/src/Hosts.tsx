@@ -135,6 +135,7 @@ function HostCard({ host, me }: { host: Host; me: Me }) {
       )}
       {showProxer && <ConfigBlock load={() => api.proxerConfig(host.id)} label="proxer (host side)" />}
       {showClient && <ConfigBlock load={() => api.clientConfig(host.id)} label="client (consumer side)" />}
+      {r === "proxer" && <Onboarding host={host} />}
       {(del.isError || setState.isError) && (
         <p className="text-xs text-red-600">
           {String((del.error ?? setState.error)?.message)}
@@ -300,6 +301,13 @@ function CreateHost({ onClose }: { onClose: () => void }) {
   const [pub, setPub] = useState("");
   const [transport, setTransport] = useState("wireguard");
   const [consumer, setConsumer] = useState("");
+  const [query, setQuery] = useState("");
+
+  // Directory-backed invitation: operators pick a person, never a raw UUID.
+  const users = useQuery({
+    queryKey: ["users", query],
+    queryFn: () => api.users(query),
+  });
 
   const create = useMutation({
     mutationFn: () =>
@@ -350,12 +358,36 @@ function CreateHost({ onClose }: { onClose: () => void }) {
           <option value="amneziawg">amneziawg</option>
           <option value="xray-vless">xray-vless (TLS masking)</option>
         </select>
-        <input
-          className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono"
-          placeholder="consumer user id (invitation)"
-          value={consumer}
-          onChange={(e) => setConsumer(e.target.value)}
-        />
+
+        <div className="space-y-1">
+          <input
+            className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm"
+            placeholder="search the user directory"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="max-h-40 overflow-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+            {users.isPending && <p className="p-2 text-xs opacity-60">…</p>}
+            {users.data?.length === 0 && (
+              <p className="p-2 text-xs opacity-60">no matching users</p>
+            )}
+            {users.data?.map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                className={`block w-full text-left px-3 py-1.5 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                  consumer === u.id ? "font-medium bg-zinc-100 dark:bg-zinc-800" : ""
+                }`}
+                onClick={() => setConsumer(u.id)}
+              >
+                {u.display_name}
+                {u.is_admin && <span className="ml-2 text-xs opacity-50">admin</span>}
+                {consumer === u.id && <span className="ml-2 text-xs">✓ invited</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {create.isError && (
           <p className="text-xs text-red-600">{String(create.error.message)}</p>
         )}
@@ -369,12 +401,60 @@ function CreateHost({ onClose }: { onClose: () => void }) {
           </button>
           <button
             type="submit"
-            className="rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-3.5 py-2 font-medium"
+            className="rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-3.5 py-2 font-medium disabled:opacity-50"
+            disabled={!name || !consumer}
           >
             Create
           </button>
         </div>
       </form>
     </div>
+  );
+}
+
+// Onboarding: a proxer's real first step is bringing the tunnel up on their
+// own machine, so the panel spells out the exact commands instead of leaving
+// them to read the RFC.
+function Onboarding({ host }: { host: Host }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (text: string, tag: string) => {
+    void navigator.clipboard.writeText(text);
+    setCopied(tag);
+    setTimeout(() => setCopied(null), 1500);
+  };
+  const lines = [
+    `# 1. generate your keypair locally (private key never leaves this machine)`,
+    `wg genkey | tee /etc/dyatel-private.key | wg pubkey`,
+    `# 2. fetch the rendered config and fill in the private key`,
+    `dyatelctl --api https://${location.host} hosts config proxer ${host.id} --out /etc/wireguard/${host.name}.conf`,
+    `sed -i "s|{{PRIVATE_KEY}}|$(cat /etc/dyatel-private.key)|" /etc/wireguard/${host.name}.conf`,
+    `# 3. bring the tunnel up`,
+    `wg-quick up ${host.name}`,
+    `# 4. allow the gateway on your firewall (RFC §6 proxer contract)`,
+    `ufw allow in proto udp from <gateway-ip> to any port ${host.listen_port}`,
+  ].join("\n");
+
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer select-none opacity-70 hover:opacity-100">
+        Bring-up instructions
+      </summary>
+      <div className="mt-2 space-y-2">
+        <div className="relative">
+          <button
+            className="absolute right-2 top-2 rounded bg-zinc-800 text-zinc-200 px-2 py-1 text-xs hover:bg-zinc-700"
+            onClick={() => copy(lines, host.id)}
+          >
+            {copied === host.id ? "Copied" : "Copy"}
+          </button>
+          <pre className="code">{lines}</pre>
+        </div>
+        <p className="text-xs opacity-60">
+          Public endpoint: <code>{host.endpoint ?? "see daemon config"}</code> ·
+          listen port <code>{host.listen_port}/udp</code> · tunnel{" "}
+          <code>{host.tunnel_ipv4}</code>
+        </p>
+      </div>
+    </details>
   );
 }

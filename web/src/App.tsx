@@ -5,6 +5,8 @@ import { complete, mgr, signin } from "./auth";
 import { clearCred, getCred, setCred, type Credential } from "./session";
 import Hosts from "./Hosts";
 import Status from "./Status";
+import Tokens from "./Tokens";
+import Events from "./Events";
 
 // Top-level auth state machine. Two entry paths, one session shape:
 //  - Authentik OIDC code flow (PKCE) for normal humans;
@@ -157,7 +159,7 @@ function Login({
 
 function Panel({ cred, onSignout }: { cred: Credential; onSignout: () => void }) {
   const me = useQuery({ queryKey: ["me", cred], queryFn: api.me });
-  const [tab, setTab] = useState<"hosts" | "status">("hosts");
+  const [tab, setTab] = useState<"hosts" | "tokens" | "activity" | "status">("hosts");
 
   if (me.isPending) return <Shell>Loading…</Shell>;
   if (me.isError)
@@ -192,21 +194,28 @@ function Panel({ cred, onSignout }: { cred: Credential; onSignout: () => void })
         </div>
       </header>
       <nav className="flex gap-1 text-sm border-b border-zinc-200 dark:border-zinc-800 mb-6">
-        {(["hosts", "status"] as const).map((t) => (
-          <button
-            key={t}
-            className={`px-3 py-2 -mb-px border-b-2 ${
-              tab === t
-                ? "border-zinc-900 dark:border-zinc-100 font-medium"
-                : "border-transparent opacity-60 hover:opacity-100"
-            }`}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
+        {(["hosts", "tokens", "activity", "status"] as const)
+          // status is the admin drift report: no point showing a 403 tab to
+          // the users who cannot read it.
+          .filter((t) => t !== "status" || me.data.is_admin)
+          .map((t) => (
+            <button
+              key={t}
+              className={`px-3 py-2 -mb-px border-b-2 ${
+                tab === t
+                  ? "border-zinc-900 dark:border-zinc-100 font-medium"
+                  : "border-transparent opacity-60 hover:opacity-100"
+              }`}
+              onClick={() => setTab(t)}
+            >
+              {t}
+            </button>
+          ))}
       </nav>
-      {tab === "hosts" ? <Hosts me={me.data} /> : <Status />}
+      {tab === "hosts" && <Hosts me={me.data} />}
+      {tab === "tokens" && <Tokens />}
+      {tab === "activity" && <Events isAdmin={me.data.is_admin} />}
+      {tab === "status" && <Status />}
     </Shell>
   );
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -38,11 +40,20 @@ func (s *Server) Router() http.Handler {
 		r.Use(s.authMW)
 		r.Get("/me", s.me)
 		r.Get("/status", s.status)
+		r.Post("/reconcile", s.triggerReconcile)
+		r.Get("/users", s.listUsers)
+		r.Get("/events", s.listEvents)
+		r.Route("/tokens", func(r chi.Router) {
+			r.Post("/", s.createToken)
+			r.Get("/", s.listTokens)
+			r.Delete("/{id}", s.revokeToken)
+		})
 		r.Route("/hosts", func(r chi.Router) {
 			r.Post("/", s.createHost)
 			r.Get("/", s.listHosts)
 			r.Route("/{id}", func(r chi.Router) {
 				r.Get("/", s.getHost)
+				r.Patch("/", s.patchHost)
 				r.Delete("/", s.deleteHost)
 				r.Post("/consumer-key", s.registerConsumerKey)
 				r.Post("/state", s.setState)
@@ -92,6 +103,101 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.rc.Status(r.Context()))
 }
 
+// triggerReconcile runs the loop now instead of waiting for the next tick:
+// the CLI and the panel both want "I changed state, show me drift now".
+func (s *Server) triggerReconcile(w http.ResponseWriter, r *http.Request) {
+	s.rc.Trigger()
+	writeJSON(w, map[string]bool{"reconcile_queued": true})
+}
+
+func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
+	// Invitations need a human-readable directory: the panel used to demand
+	// a raw UUID, which no operator can know by heart.
+	us, err := s.st.Users(r.Context(), r.URL.Query().Get("q"))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, us)
+}
+
+func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	// Admins read the full log (moderation); everyone else sees only their
+	// own trail — other users' actions are none of their business.
+	var scope *uuid.UUID
+	if !id.IsAdmin {
+		uid := id.User.ID
+		scope = &uid
+	}
+	evs, err := s.st.Events(r.Context(), scope, limit)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, evs)
+}
+
+func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	var in struct {
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Label) == "" {
+		http.Error(w, "label required", 400)
+		return
+	}
+	// The plaintext secret leaves the server exactly once, here. Only its
+	// digest is persisted, so a database dump cannot mint a working token.
+	secret := auth.NewToken()
+	t, err := s.st.CreateToken(r.Context(), id.User.ID, in.Label, auth.HashToken(secret))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "token.create", "token", t.ID.String(),
+		mustMarshal(map[string]string{"label": in.Label}))
+	writeJSON(w, struct {
+		*store.Token
+		Secret string `json:"token"`
+	}{t, secret})
+}
+
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	ts, err := s.st.TokensByUser(r.Context(), id.User.ID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, ts)
+}
+
+func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	tid, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "bad id", 400)
+		return
+	}
+	if err := s.st.RevokeToken(r.Context(), id.User.ID, tid); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "404", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "token.revoke", "token", tid.String(), []byte(`{}`))
+	w.WriteHeader(204)
+}
+
 func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 	id := auth.From(r.Context())
 	// Non-nil slice so the response encodes as [] rather than null; clients
@@ -131,11 +237,11 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 	id := auth.From(r.Context())
 	var in struct {
-		Name      string `json:"name"`
-		PublicKey string `json:"wg_public_key"` // proxer BYOK
-		Transport string `json:"transport"`
-		ConsumerID string `json:"consumer_id"` // invitation
-		Keepalive  int    `json:"keepalive"`
+		Name       string          `json:"name"`
+		PublicKey  string          `json:"wg_public_key"` // proxer BYOK
+		Transport  string          `json:"transport"`
+		ConsumerID string          `json:"consumer_id"` // invitation
+		Keepalive  int             `json:"keepalive"`
 		Params     json.RawMessage `json:"params"` // transport-specific (awg obfuscation)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -215,7 +321,7 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 	h := &store.Host{
 		Name: in.Name, Node: s.cfg.Node, OwnerID: id.User.ID, ConsumerID: consumer,
 		WGPublicKey: in.PublicKey,
-		TunnelIPv4: tv4, TunnelIPv6: tv6,
+		TunnelIPv4:  tv4, TunnelIPv6: tv6,
 		Transport: in.Transport, ListenPort: port,
 		Keepalive: orDefault(in.Keepalive, 25),
 		Params:    params,
@@ -228,6 +334,64 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 	h.GWPrivateKey = ""
 	h.WGPreSharedKey = ""
 	writeJSON(w, h)
+}
+
+// patchHost is the post-creation edit surface: endpoint, keepalive and the
+// invited consumer. BYOK keys are deliberately immutable — rotating a key
+// is delete-and-create, because a half-rotated pair has no valid state.
+func (s *Server) patchHost(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	h, ok := s.hostFromURL(w, r)
+	if !ok {
+		return
+	}
+	if id.RoleOn(*h) != "owner" && !id.IsAdmin {
+		http.Error(w, "403", http.StatusForbidden)
+		return
+	}
+	var in struct {
+		Endpoint   *string `json:"endpoint"`
+		Keepalive  *int    `json:"keepalive"`
+		ConsumerID *string `json:"consumer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if in.Keepalive != nil && (*in.Keepalive < 0 || *in.Keepalive > 65535) {
+		http.Error(w, "bad keepalive", 400)
+		return
+	}
+	var consumer *uuid.UUID
+	if in.ConsumerID != nil {
+		c, err := uuid.Parse(*in.ConsumerID)
+		if err != nil {
+			http.Error(w, "bad consumer_id", 400)
+			return
+		}
+		if c == h.OwnerID {
+			http.Error(w, "consumer must differ from owner (DB constraint)", 400)
+			return
+		}
+		if _, err := s.st.UserByID(r.Context(), c); err != nil {
+			http.Error(w, "unknown consumer", 404)
+			return
+		}
+		consumer = &c
+	}
+	if err := s.st.UpdateHostFields(r.Context(), h.ID, in.Endpoint, in.Keepalive, consumer); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.rc.Trigger()
+	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "host.patch", "host", h.ID.String(), []byte(`{}`))
+	nh, err := s.st.Host(r.Context(), h.ID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	nh.GWPrivateKey, nh.WGPreSharedKey = "", ""
+	writeJSON(w, nh)
 }
 
 func (s *Server) deleteHost(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +423,9 @@ func (s *Server) registerConsumerKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "403", http.StatusForbidden)
 		return
 	}
-	var in struct{ PublicKey string `json:"wg_public_key"` }
+	var in struct {
+		PublicKey string `json:"wg_public_key"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.PublicKey) != 44 {
 		http.Error(w, "bad key (want 44-char wg public key)", 400)
 		return
@@ -288,7 +454,9 @@ func (s *Server) setState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "403", http.StatusForbidden)
 		return
 	}
-	var in struct{ State string `json:"state"` }
+	var in struct {
+		State string `json:"state"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil ||
 		(in.State != "active" && in.State != "suspended") {
 		http.Error(w, "bad state", 400)
@@ -513,6 +681,16 @@ func orDefault(v, def int) int {
 		return def
 	}
 	return v
+}
+
+// mustMarshal builds an audit detail blob without hand-rolled JSON, so a
+// label containing quotes or newlines cannot corrupt the event row.
+func mustMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return b
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
