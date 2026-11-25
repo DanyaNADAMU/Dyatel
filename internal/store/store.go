@@ -424,14 +424,28 @@ func (s *Store) Events(ctx context.Context, userID *uuid.UUID, limit int) ([]Eve
 }
 
 // UpdateHostFields applies the PATCH surface: endpoint, keepalive and the
-// invited consumer are the only mutable knobs after creation. Keys keep
-// their own endpoints so BYOK stays one-way.
+// invited consumer are the only mutable knobs after creation.
+//
+// Changing the consumer MUST drop their registered BYOK key and tunnel IPs:
+// otherwise the previous consumer keeps a live [Peer] on the gateway with the
+// same preshared key, and the new consumer inherits a keypair they do not own.
+// The CASE expressions read the pre-update row, so the comparison is against
+// the outgoing consumer.
 func (s *Store) UpdateHostFields(ctx context.Context, id uuid.UUID, endpoint *string, keepalive *int, consumer *uuid.UUID) error {
 	ct, err := s.Pool.Exec(ctx,
 		`UPDATE hosts SET
 		   endpoint    = COALESCE($2, endpoint),
 		   keepalive   = COALESCE($3, keepalive),
-		   consumer_id = COALESCE($4, consumer_id),
+		   consumer_id = COALESCE($4::uuid, consumer_id),
+		   consumer_wg_public_key =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_wg_public_key END,
+		   consumer_tunnel_ipv4 =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_tunnel_ipv4 END,
+		   consumer_tunnel_ipv6 =
+		     CASE WHEN $4::uuid IS NOT NULL AND $4::uuid <> consumer_id
+		          THEN NULL ELSE consumer_tunnel_ipv6 END,
 		   updated_at  = now()
 		 WHERE id=$1`, id, endpoint, keepalive, consumer)
 	if err != nil {
