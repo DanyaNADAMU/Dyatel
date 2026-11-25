@@ -34,7 +34,12 @@ func init() {
 
 	carapace.Gen(rootCmd)
 
-	rootCmd.AddCommand(meCmd, statusCmd, hostsCmd, forwardsCmd)
+	rootCmd.AddCommand(meCmd, statusCmd, hostsCmd, forwardsCmd,
+		tokensCmd, usersCmd, eventsCmd, reconcileCmd)
+	tokensCmd.AddCommand(tokensCreateCmd, tokensListCmd, tokensRmCmd)
+	tokensCreateCmd.Flags().String("label", "", "human label shown in `tokens list` (laptop, vps, ci)")
+	usersCmd.AddCommand(usersListCmd)
+	eventsCmd.Flags().Int("limit", 50, "max rows (1-500)")
 }
 
 // Execute runs the command tree; main owns the error formatting.

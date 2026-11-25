@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -127,6 +129,110 @@ func (c *Client) Me() (Me, error) {
 // Status returns the admin-only reconcile status document untouched.
 func (c *Client) Status() ([]byte, error) {
 	return c.Do(http.MethodGet, "/status", nil)
+}
+
+// Token is a PAT row as exposed by the API: metadata only, no secret.
+type Token struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	CreatedAt  string `json:"created_at"`
+	LastUsedAt string `json:"last_used_at,omitempty"`
+	RevokedAt  string `json:"revoked_at,omitempty"`
+	// Secret is populated only by CreateToken — the one time the daemon
+	// hands out the plaintext value.
+	Secret string `json:"token,omitempty"`
+}
+
+func (c *Client) CreateToken(label string) (Token, error) {
+	raw, err := c.Do(http.MethodPost, "/tokens", map[string]string{"label": label})
+	if err != nil {
+		return Token{}, err
+	}
+	var t Token
+	return t, json.Unmarshal(raw, &t)
+}
+
+func (c *Client) ListTokens() ([]Token, error) {
+	raw, err := c.Do(http.MethodGet, "/tokens", nil)
+	if err != nil {
+		return nil, err
+	}
+	ts := []Token{}
+	return ts, json.Unmarshal(raw, &ts)
+}
+
+func (c *Client) RevokeToken(id string) error {
+	_, err := c.Do(http.MethodDelete, "/tokens/"+id, nil)
+	return err
+}
+
+// TriggerReconcile asks the daemon to run a loop pass right now.
+func (c *Client) TriggerReconcile() error {
+	_, err := c.Do(http.MethodPost, "/reconcile", nil)
+	return err
+}
+
+// User is one directory entry the invitation picker can name.
+type User struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	IsAdmin     bool   `json:"is_admin"`
+}
+
+func (c *Client) ListUsers(q string) ([]User, error) {
+	path := "/users"
+	if q != "" {
+		path += "?q=" + url.QueryEscape(q)
+	}
+	raw, err := c.Do(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	us := []User{}
+	return us, json.Unmarshal(raw, &us)
+}
+
+// Event is one audit row from the daemon event feed.
+type Event struct {
+	ID         int64  `json:"id"`
+	At         string `json:"at"`
+	AuthMethod string `json:"auth_method"`
+	Action     string `json:"action"`
+	ObjectType string `json:"object_type"`
+	ObjectID   string `json:"object_id"`
+}
+
+func (c *Client) ListEvents(limit int) ([]Event, error) {
+	path := "/events"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	raw, err := c.Do(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	evs := []Event{}
+	return evs, json.Unmarshal(raw, &evs)
+}
+
+// PatchHost edits the mutable host knobs (endpoint, keepalive, consumer).
+func (c *Client) PatchHost(id string, endpoint *string, keepalive *int, consumerID *string) (Host, error) {
+	body := map[string]any{}
+	if endpoint != nil {
+		body["endpoint"] = *endpoint
+	}
+	if keepalive != nil {
+		body["keepalive"] = *keepalive
+	}
+	if consumerID != nil {
+		body["consumer_id"] = *consumerID
+	}
+	raw, err := c.Do(http.MethodPatch, "/hosts/"+id, body)
+	if err != nil {
+		return Host{}, err
+	}
+	var h Host
+	return h, json.Unmarshal(raw, &h)
 }
 
 // Host mirrors the daemon's wire format. The daemon serializes store.Host

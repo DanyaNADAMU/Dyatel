@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -23,9 +24,14 @@ const (
 	roleAdmin      = "admin"
 )
 
-// HashToken derives the argon2id hash of a PAT.
+// HashToken derives the lookup digest of a PAT. A 256-bit random secret has
+// no dictionary to attack, so a plain SHA-256 is the right tool: argon2id
+// here would buy nothing and cost 64 MiB + tens of milliseconds on every
+// request. Lookup is by exact digest, which is why a per-token salt is not
+// an option — the digest must be searchable.
 func HashToken(token string) []byte {
-	return argon2.IDKey([]byte(token), []byte("dyatel-static-salt"), 1, 64*1024, 2, 32)
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
 }
 
 // NewToken mints a PAT: dyatel_<43 b64url chars>.
@@ -97,16 +103,16 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer dyatel_") {
 		tok := strings.TrimPrefix(h, "Bearer ")
 		row := a.st.Pool.QueryRow(r.Context(),
-			`SELECT t.user_id, u.authentik_sub, u.display_name, u.is_admin
+			`SELECT t.id, t.user_id, u.authentik_sub, u.display_name, u.is_admin
 			 FROM tokens t JOIN users u ON u.id = t.user_id
 			 WHERE t.secret_hash = $1 AND t.revoked_at IS NULL`, HashToken(tok))
-		var id, sub, name string
+		var tid, id, sub, name string
 		var admin bool
-		if err := row.Scan(&id, &sub, &name, &admin); err != nil {
+		if err := row.Scan(&tid, &id, &sub, &name, &admin); err != nil {
 			return anon, fmt.Errorf("bad token")
 		}
 		uid := uuid.MustParse(id)
-		_, _ = a.st.Pool.Exec(r.Context(), `UPDATE tokens SET last_used_at=now() WHERE user_id=$1`, uid)
+		a.st.TouchToken(r.Context(), uuid.MustParse(tid))
 		return Identity{User: &store.User{ID: uid, AuthentikSub: sub, DisplayName: name, IsAdmin: admin},
 			AuthMethod: "pat", IsAdmin: admin}, nil
 	}
@@ -136,9 +142,9 @@ func (a *Authenticator) oidc(r *http.Request, token string) (Identity, error) {
 	}
 	defer resp.Body.Close()
 	var out struct {
-		Active bool   `json:"active"`
-		Sub    string `json:"sub"`
-		Name   string `json:"name"`
+		Active bool     `json:"active"`
+		Sub    string   `json:"sub"`
+		Name   string   `json:"name"`
 		Groups []string `json:"groups"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.Active {
