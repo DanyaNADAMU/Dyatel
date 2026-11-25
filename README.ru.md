@@ -108,6 +108,32 @@ ansible-playbook playbooks/site.yml
 
 ---
 
+## 🎛️ Панель управления (v2)
+
+Декларативный путь: один демон `dyatel-core` на узел согласует всю
+топологию из Postgres — пиры, правила файрвола, NAT и отрендеренные
+конфиги — а CLI и веб-панель остаются тонкими клиентами API
+([RFC](docs/RFC-core.md)).
+
+```bash
+# CLI: персональный токен из панели, без админ-пароля в скриптах
+export DYATEL_API=https://dyatel.example.com
+dyatelctl tokens create --label laptop     # показывается один раз
+dyatelctl hosts list
+dyatelctl forwards create <host-id> --public-port 25565 --target-port 25565 --proto tcp
+
+# Управляемое развертывание (core + панель) из чекаута Infra
+cd Infra
+ansible-playbook playbooks/dyatel.yml -i inventory/dyatel/production.yml
+```
+
+Панель: `https://dyatel.<domain>` — хосты, форварды, конфиги, PAT,
+журнал действий. Пошаговое руководство:
+[подключение своей машины](docs/ru/attach-your-machine.md) (EN:
+[attach your machine](docs/en/attach-your-machine.md)).
+
+---
+
 ## 🔒 Гарантии безопасности
 
 * **Zero Leakage**: Домашний IP-адрес на 100% скрыт за шлюзом.

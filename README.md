@@ -115,6 +115,32 @@ dyatel_gateway_game_port: 25565
 
 ---
 
+## 🎛️ Control Plane (v2)
+
+The declarative path: one `dyatel-core` daemon per node reconciles the
+whole topology from Postgres — peers, firewall rules, NAT and rendered
+configs — while the CLI and the web panel stay thin API clients
+([RFC](docs/RFC-core.md)).
+
+```bash
+# CLI: personal access token from the panel, no admin password in scripts
+export DYATEL_API=https://dyatel.example.com
+dyatelctl tokens create --label laptop     # printed once
+dyatelctl hosts list
+dyatelctl forwards create <host-id> --public-port 25565 --target-port 25565 --proto tcp
+
+# Managed deployment (core + panel) from the Infra checkout
+cd Infra
+ansible-playbook playbooks/dyatel.yml -i inventory/dyatel/production.yml
+```
+
+Panel: `https://dyatel.<domain>` — hosts, forwards, rendered configs,
+PAT management, audit feed. Step-by-step operator guide:
+[Attach your machine](docs/en/attach-your-machine.md) (RU:
+[подключение своей машины](docs/ru/attach-your-machine.md)).
+
+---
+
 ## 🔒 Security & Privacy Guarantees
 
 * **Zero Leakage**: Your home IP address is completely shielded behind the public VPS gateway.
