@@ -88,7 +88,7 @@ trust — they police it.
 |---|---|---|
 | id | uuid pk | |
 | user_id | uuid not null references users | |
-| secret_hash | bytea not null unique | argon2id(token) |
+| secret_hash | bytea not null unique | sha256(token) — 256-bit random secret, lookup must stay exact |
 | label | text not null | shown in CLI as `laptop`, `vps` |
 | created_at / last_used_at / revoked_at | timestamptz | |
 
@@ -248,16 +248,22 @@ and, later, the panel activity feed.
 | action | owner | consumer | other | admin |
 |---|---|---|---|---|
 | create/delete/edit host (keys, consumer, endpoint) | ✔ | — | — | ✔ |
-| create/delete forward on the host | — | ✔ | — | ✔ |
-| create/delete DNS record on a forward | — | ✔ | — | ✔ |
+| create/delete forward on the host | ✔ | — | — | ✔ |
+| create/delete DNS record on a forward | ✔ | — | — | ✔ |
 | download host wg config | ✔ | ✔ | — | ✔ |
 | download consumer wg config | ✔ | ✔ | — | ✔ |
 | suspend host | ✔ | — | — | ✔ |
 | list all users / hosts / events | — | — | — | ✔ |
 
-Rationale: the owner trusts *one* consumer with the tunnel; the
-consumer decides what of the owner's services is worth publishing.
-Both can fetch the WireGuard configs (they need them to bring up
+Rationale: forwards are published **by the owner**, not the consumer —
+the person who runs the service decides what of their machine is
+exposed on the public gateway, and the firewall/NAT they own is what
+gets opened. The consumer's role is to dial in and consume the tunnel;
+they get read-only visibility of the forwards, not a publish button.
+Implementation note: this matrix is what the code enforces
+(`createForward`/`deleteForward` require `owner` or admin), and it
+replaces the earlier draft that had the consumer publishing.
+Both sides can fetch the WireGuard configs (they need them to bring up
 either side). Admins are moderators: global visibility + override,
 never needed for the happy path. Nobody else sees anything.
 
@@ -314,25 +320,33 @@ AGENTS.md §10 whitelist. Auth via PAT bearer, OIDC bearer
 ```
 POST   /api/v1/users/me                # idempotent provision on first auth
 GET    /api/v1/users/me
+GET    /api/v1/users?q=                # directory search (invitations)
 POST   /api/v1/tokens                  # {label} -> full token shown ONCE
 GET    /api/v1/tokens                  # list (metadata only)
-DELETE /api/v1/tokens/{id}             # revoke
+DELETE /api/v1/tokens/{id}             # revoke (not rotate)
+
+GET    /api/v1/events?limit=           # own audit trail; admins see all
 
 GET    /api/v1/hosts                   # mine as owner + mine as consumer
 POST   /api/v1/hosts                   # {name, wg_public_key, consumer}
-PATCH  /api/v1/hosts/{id}              # endpoint, consumer, keepalive, state
+PATCH  /api/v1/hosts/{id}              # endpoint, keepalive, consumer
 DELETE /api/v1/hosts/{id}
 GET    /api/v1/hosts/{id}/config        # rendered wg-quick conf (host side)
 
 GET    /api/v1/hosts/{id}/forwards
-POST   /api/v1/hosts/{id}/forwards      # consumer only
+POST   /api/v1/hosts/{id}/forwards      # owner only (§4)
 DELETE /api/v1/hosts/{id}/forwards/{fid}
-POST   /api/v1/forwards/{fid}/dns      # {name} -> record + CF sync
+POST   /api/v1/forwards/{fid}/dns      # {name} -> record + CF sync (deferred)
 DELETE /api/v1/forwards/{fid}/dns
 
 POST   /api/v1/reconcile                # SIGUSR1-equivalent: trigger loop NOW
 GET    /api/v1/status                   # drift report (last apply, diffs)
 ```
+
+Deferred to a later milestone: DNS records (`/forwards/{fid}/dns`,
+`dns_records`, Cloudflare upsert). Until it lands, forwards are used by
+`IP:port` on the gateway; the table and the config knob exist so the
+feature can arrive without a schema change.
 
 All mutations are **optimistic**: core validates, writes to Postgres,
 and returns `202 {reconcile_queued}`. Actual network application
@@ -433,7 +447,9 @@ absent).
   `dyatel` lives in the existing `postgresql@17-main` cluster on
   **glacier**, reached by core (on berg) over the wireguard mesh —
   separate role, no cross-grants to other DBs.
-- PAT tokens hashed (argon2id); a leaked token is revoke-not-rotate.
+- PAT tokens stored as SHA-256 digests (a 256-bit random secret has no
+  dictionary, and the digest must be indexable for auth); a leaked token is
+  revoke-not-rotate.
 - Audit events cover every mutating call (§3.6).
 
 ## 8. No backward compatibility (explicit)

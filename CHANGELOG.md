@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.2.0] - 2026-11-25
+
+### Added
+- **PAT lifecycle in the API and CLI (RFC §3.2)**: `POST/GET/DELETE
+  /api/v1/tokens` mint, list and revoke personal access tokens
+  (`dyatel_<32 bytes base64url>`). The plaintext secret is returned once
+  and never stored — the daemon keeps a SHA-256 digest, because a
+  256-bit random secret has no dictionary to attack and the digest must
+  stay indexable for auth. `dyatelctl tokens create|list|rm` covers the
+  same surface, so scripts no longer need the break-glass admin pair.
+- **Post-creation host edits (RFC §5)**: `PATCH /api/v1/hosts/{id}` and
+  `dyatelctl hosts edit` change the recorded endpoint, keepalive and the
+  invited consumer. BYOK keys stay immutable on purpose: a half-rotated
+  keypair has no valid state, so key rotation is delete-and-create.
+- **User directory and audit feed**: `GET /api/v1/users?q=` powers
+  consumer invitations by display name instead of a raw UUID, and
+  `GET /api/v1/events?limit=` exposes the audit trail (`dyatelctl
+  users list`, `dyatelctl events`) — scoped to the caller's own actions,
+  full feed for admins.
+- **`POST /api/v1/reconcile`** (and `dyatelctl reconcile`): force a loop
+  pass instead of waiting up to the tick interval.
+- **Panel: tokens, activity and onboarding**. New tabs manage PATs
+  (with a one-time reveal block), render the audit feed, and hide the
+  admin-only drift report from regular users. Registering a host now
+  picks the consumer from the searchable directory, and proxer cards
+  spell out the exact `wg genkey` → `config` → `wg-quick up` bring-up
+  commands with a copy button.
+- **`store.User` wire contract**: canonical snake_case JSON tags with
+  `authentik_sub` excluded (`json:"-"`), so the directory endpoint cannot
+  leak an internal identity key.
+
+### Fixed
+- **`last_used_at` poisoned by every PAT request**: the auth path updated
+  the timestamp for every token the user owned instead of the one that
+  authenticated. `TouchToken` now scopes the update to the presented
+  token.
+- **Permissions matrix drift (RFC §4)**: the implementation requires the
+  **owner** to publish forwards (the person who owns the machine and its
+  firewall decides what is exposed), while the document still said
+  consumer. The RFC now matches the code, which is also what the panel,
+  CLI and the v2.2.0 acceptance path assume.
+
+### Deferred
+- DNS records for forwards (Cloudflare upsert, RFC §3.5/§6). Forwards are
+  consumed by `IP:port` on the gateway; the `dns_records` table and the
+  zone knob already exist so the feature lands without a schema change.
+
 ## [v2.1.2] - 2026-11-22
 
 ### Fixed
