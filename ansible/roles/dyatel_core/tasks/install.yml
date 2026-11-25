@@ -101,10 +101,13 @@
   ansible.builtin.meta: flush_handlers
 
 # --- Binary (built on the control host, shipped; no releases yet) ---
+# -buildvcs=false is load-bearing for idempotency: with VCS stamping on, every
+# commit rewrites the binary's build info, so a no-op deploy reports changed
+# and restarts the daemon. The shipped artifact must depend on source only.
 
 - name: Build dyatel-core binary on the control host  # noqa command-instead-of-module
   ansible.builtin.command:
-    cmd: "{{ dyatel_core_go_bin }} build -trimpath -o /tmp/dyatel-core-build ./cmd/dyatel-core"
+    cmd: "{{ dyatel_core_go_bin }} build -trimpath -buildvcs=false -o /tmp/dyatel-core-build ./cmd/dyatel-core"
     chdir: "{{ dyatel_core_local_src }}"
   delegate_to: localhost
   become: false
@@ -143,7 +146,7 @@
 
 - name: Build dyatelctl binary on the control host  # noqa command-instead-of-module
   ansible.builtin.command:
-    cmd: "{{ dyatel_core_go_bin }} build -trimpath -o /tmp/dyatelctl-build ./cmd/dyatelctl"
+    cmd: "{{ dyatel_core_go_bin }} build -trimpath -buildvcs=false -o /tmp/dyatelctl-build ./cmd/dyatelctl"
     chdir: "{{ dyatel_core_local_src }}"
   delegate_to: localhost
   become: false

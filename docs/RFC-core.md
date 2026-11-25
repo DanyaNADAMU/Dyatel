@@ -148,6 +148,14 @@ from a core-managed pool (like tunnel IPs):
 | `amneziawg` | 51900–51999/udp | `awg syncconf` | phase 1b; same schema, AWG obfuscation fields in `hosts.params jsonb` |
 | `xray-vless` | 5200–5299/tcp | xray API/grpc | phase 2; host row carries UUID+TLS params; forward = routing rule |
 
+Tunnel addressing is per transport: each transport may live in its own
+network pair (`DYATEL_TUNNEL_V4_WG/_V6_WG`, `_V4_AWG/_V6_AWG`), so a peer can
+hold symmetric addresses on both transports without AllowedIPs or reply
+routes colliding. Inside a network, `.1–.15` are reserved for gateways and
+infrastructure; hosts are carved from `.16` upward. AWG pins its inner MTU to
+1280 (obfuscation eats headroom and IPv6 has a hard 1280-byte floor); WG keeps
+automatic MTU from the underlay.
+
 Masquerade modes (`params.mode`, copied from the Infra Glacier/Floe pattern;
 `tls` is the default):
 
@@ -426,6 +434,15 @@ every 30s (and on POST /reconcile):
   blockinfile content is *removed* on first run (§8).
 - **DNS**: idempotent upsert by record name; orphaned CF records with
   our comment tag but no matching forward get deleted.
+- **IPv6 ingress**: each forward also installs a parallel ip6tables
+  DNAT/MASQUERADE pair against the host's inner v6 address, so a v6 player
+  reaches the same service. NAT stays inside its own family — v6→v4 would be
+  NAT64, not DNAT, and no tunnel can translate families by itself.
+- **Degraded mode**: when the database is unreachable the loop does not go
+  dark — it re-asserts the rendered configs already on disk (bring-up only,
+  never removal or reconfiguration, since that authority needs live desired
+  state). A data-plane node rebooting during a control-plane outage keeps or
+  restores its tunnels.
 - **Dry-run**: `dyatelctl status` calls `GET /status` which runs the
   diff but applies nothing.
 
@@ -513,7 +530,14 @@ incusbr0 to the test VM, scram-sha-256). Port/IP allocators are global
 `10.13.36.0/24` + `fd00:36::/64`, core `.1`, gw `.2`, consumer `.3`).
 `DYATEL_NODE` selects which hosts a node reconciles; `/status` reports
 per-node state. The existing `dyatel` DB on test is reused ("we do not
-own Postgres"). The legacy `dyatel_gateway` on test is decommissioned
+own Postgres"). Node roles (v2.3): one **management node** (glacier) runs the panel and owns
+the Postgres database; **proxer nodes** (berg, and further gateways) run the
+same binary with no panel and no database process, reaching the management
+database over the mesh; **targets** run no Dyatel software at all — only
+their BYOK keys and a rendered config. The data path never touches the
+database: existing tunnels keep forwarding while the control plane is down.
+
+The legacy `dyatel_gateway` on test is decommissioned
 (frozen v1.0.1). Testbed-first and idempotency (`changed=0`) rules apply
 throughout.
 

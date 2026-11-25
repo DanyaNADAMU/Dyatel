@@ -286,12 +286,16 @@ func (h Host) DecodedParams() (json.RawMessage, error) {
 // CreateHostRequest is the POST /hosts payload (snake_case, matching the
 // daemon's explicit request tags).
 type CreateHostRequest struct {
-	Name        string          `json:"name"`
-	WGPublicKey string          `json:"wg_public_key,omitempty"` // BYOK
-	Transport   string          `json:"transport,omitempty"`
-	ConsumerID  string          `json:"consumer_id"`
-	Keepalive   int             `json:"keepalive,omitempty"` // 0 lets the daemon apply its default (25)
-	Params      json.RawMessage `json:"params,omitempty"`    // awg obfuscation knobs
+	Name          string          `json:"name"`
+	Node          string          `json:"node,omitempty"`
+	PreferredIPv4 string          `json:"preferred_ipv4,omitempty"`
+	PreferredIPv6 string          `json:"preferred_ipv6,omitempty"`
+	PreferredPort int             `json:"preferred_port,omitempty"`
+	WGPublicKey   string          `json:"wg_public_key,omitempty"` // BYOK
+	Transport     string          `json:"transport,omitempty"`
+	ConsumerID    string          `json:"consumer_id"`
+	Keepalive     int             `json:"keepalive,omitempty"` // 0 lets the daemon apply its default (25)
+	Params        json.RawMessage `json:"params,omitempty"`    // awg obfuscation knobs
 }
 
 func (c *Client) CreateHost(req CreateHostRequest) (Host, error) {

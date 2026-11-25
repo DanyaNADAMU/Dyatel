@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.3.0] - 2026-11-26
+
+### Added
+- **Per-node addressing (migration 0003)**: tunnel addresses and transport
+  ports are unique per gateway, not fleet-wide, so berg and glacier may hand
+  out the same number to the same peer - it dials them separately and the
+  reply route is chosen by destination. Public ports are unique per node too,
+  closing a latent DNAT race where two hosts on one gateway could steal each
+  other's traffic (`forwards.node` denormalised for the constraint).
+- **Pinned addresses and ports**: `preferred_ipv4`, `preferred_ipv6`,
+  `preferred_port` on host creation (`dyatelctl hosts create --preferred-*`).
+  Pins are validated against the transport's network, the reserved gateway
+  block (.1-.15) and the node's allocations, so a duplicate fails loudly
+  instead of silently landing on another peer. Pools still bound automatic
+  allocation only, which is what makes a memorable 6666/7777 possible.
+- **Per-transport tunnel networks**: `DYATEL_TUNNEL_V4_WG/_V6_WG` and
+  `_V4_AWG/_V6_AWG` (defaults `10.66.66.0/24`+`fd66:66::/64` and
+  `10.77.77.0/24`+`fd77:77::/64`). One peer can now hold symmetric addresses
+  on both transports without AllowedIPs or reply routes colliding.
+- **IPv6 ingress for forwards**: a parallel ip6tables DNAT/MASQUERADE pair
+  against the host's inner v6 address. v6 players were previously refused
+  because only the v4 half of the pipeline existed; NAT stays inside its own
+  family (v6-to-v4 is NAT64, not DNAT). Verified end to end on staging: a v6
+  request lands in the proxer's log as `fd66:66::1`.
+- **Placement on another node**: `node` on host creation (admin only), so the
+  single management surface can add a lightweight proxer node's hosts without
+  hopping to that node's daemon.
+- **Degraded data plane**: the pool connects lazily, migration retries in the
+  background, and the reconcile loop re-asserts rendered configs from disk
+  when the database is unreachable. A node rebooting during a control-plane
+  outage no longer comes up dark.
+
+### Changed
+- **AWG pins its inner MTU to 1280**: obfuscation eats headroom and IPv6 has
+  a hard 1280-byte floor (RFC 8200), so guessing from the underlay produced
+  silent loss on obfuscated links. WG keeps automatic MTU.
+- **Address rebase (migration 0004)**: existing hosts move into the new
+  per-transport networks with their host part preserved, keeping BYOK keys,
+  PSKs and gateway keypairs intact.
+- **Offline rendering starts at the host block**: `dyatelctl gen` renders the
+  first allocatable address (.16 by default) instead of .2, which now belongs
+  to the reserved gateway block.
+
+### Fixed
+- `store.Open` no longer pings on startup: pgxpool is lazy by design and the
+  ping turned a database outage into a dead data plane.
+
 ## [v2.2.0] - 2026-11-25
 
 ### Added

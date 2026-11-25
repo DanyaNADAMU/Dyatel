@@ -243,6 +243,15 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		ConsumerID string          `json:"consumer_id"` // invitation
 		Keepalive  int             `json:"keepalive"`
 		Params     json.RawMessage `json:"params"` // transport-specific (awg obfuscation)
+		// Node selects which gateway reconciles the host. Empty means "this
+		// daemon"; naming another node is an admin action (it lets the single
+		// management surface place hosts without hopping between panels).
+		Node string `json:"node"`
+		// Pinned addressing: operators keep memorable numbers (66.6, 6666)
+		// instead of first-fit luck. Validated against the node's pool.
+		PreferredIPv4 string `json:"preferred_ipv4"`
+		PreferredIPv6 string `json:"preferred_ipv6"`
+		PreferredPort int    `json:"preferred_port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad json", 400)
@@ -307,19 +316,27 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	consumer := c
-	// transport port + tunnel IPs
-	port, err := s.al.HostPort(r.Context(), in.Transport)
+	targetNode := s.cfg.Node
+	if in.Node != "" && in.Node != s.cfg.Node {
+		if !id.IsAdmin {
+			http.Error(w, "403: only an admin may place a host on another node", http.StatusForbidden)
+			return
+		}
+		targetNode = in.Node
+	}
+	// transport port + tunnel IPs (per node, per transport)
+	port, err := s.al.HostPort(r.Context(), targetNode, in.Transport, in.PreferredPort)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	tv4, tv6, err := s.al.TunnelIPs(r.Context())
+	tv4, tv6, err := s.al.TunnelIPsWith(r.Context(), targetNode, in.Transport, in.PreferredIPv4, in.PreferredIPv6)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	h := &store.Host{
-		Name: in.Name, Node: s.cfg.Node, OwnerID: id.User.ID, ConsumerID: consumer,
+		Name: in.Name, Node: targetNode, OwnerID: id.User.ID, ConsumerID: consumer,
 		WGPublicKey: in.PublicKey,
 		TunnelIPv4:  tv4, TunnelIPv6: tv6,
 		Transport: in.Transport, ListenPort: port,
@@ -430,7 +447,7 @@ func (s *Server) registerConsumerKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key (want 44-char wg public key)", 400)
 		return
 	}
-	tv4, tv6, err := s.al.TunnelIPs(r.Context())
+	tv4, tv6, err := s.al.TunnelIPs(r.Context(), h.Node, h.Transport)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

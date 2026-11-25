@@ -10,16 +10,16 @@ import (
 // (RFC §3.4a): they live in [Interface] of every config of the host —
 // berg side, proxer and consumer — and must match on all three.
 type AWGParams struct {
-	Jc          int    `json:"jc"`
-	Jmin        int    `json:"jmin"`
-	Jmax        int    `json:"jmax"`
-	S1          int    `json:"s1"`
-	S2          int    `json:"s2"`
-	S3          int    `json:"s3"`
-	H1          uint32 `json:"h1"`
-	H2          uint32 `json:"h2"`
-	H3          uint32 `json:"h3"`
-	H4          uint32 `json:"h4"`
+	Jc   int    `json:"jc"`
+	Jmin int    `json:"jmin"`
+	Jmax int    `json:"jmax"`
+	S1   int    `json:"s1"`
+	S2   int    `json:"s2"`
+	S3   int    `json:"s3"`
+	H1   uint32 `json:"h1"`
+	H2   uint32 `json:"h2"`
+	H3   uint32 `json:"h3"`
+	H4   uint32 `json:"h4"`
 }
 
 // DefaultAWGParams returns the fallback obfuscation applied when the
