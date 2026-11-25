@@ -162,7 +162,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "token.create", "token", t.ID.String(),
-		[]byte(`{"label":"`+strings.ReplaceAll(in.Label, `"`, "")+`"}`))
+		mustMarshal(map[string]string{"label": in.Label}))
 	writeJSON(w, struct {
 		*store.Token
 		Secret string `json:"token"`
@@ -681,6 +681,16 @@ func orDefault(v, def int) int {
 		return def
 	}
 	return v
+}
+
+// mustMarshal builds an audit detail blob without hand-rolled JSON, so a
+// label containing quotes or newlines cannot corrupt the event row.
+func mustMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return b
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
