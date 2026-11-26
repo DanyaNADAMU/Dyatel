@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Environment-separated staging networks**: staging runs in
+  `10.66.67.0/24` + `fd66:67::/64` (AWG `10.77.78.0/24` + `fd77:78::/64`).
+  tiny is attached to both environments, and with a shared subnet the second
+  tunnel to come up stole the `...1/32` gateway route from the first - the
+  production path went black while staging looked healthy. Production keeps
+  `10.66.66`/`10.77.77`.
+- **AmneziaWG as the working transport on filtered routes**: plain WireGuard
+  between the park's hosts stops passing data (bare UDP and TCP do not), while
+  AWG's obfuscated framing passes and holds. The core nodes now get the AWG
+  userspace toolkit through `playbooks/dyatel_awg_toolkit.yml`, and a host can
+  run WG and AWG side by side (verified: two tunnels to the same peer, `200`
+  on both, IPv4 and IPv6).
+
+### Fixed
+- **Gateway address self-heal**: an interface keeps the address it was created
+  with, so after a network change the gateway stayed on the old subnet while
+  peers moved - packets left with a stale source and the peer dropped them.
+  The loop converges the interface to the transport's gateway pair and removes
+  stale addresses from daemon-owned interfaces.
+- **Idempotent deploys**: `go build` now runs with `-buildvcs=false`; with VCS
+  stamping a commit between two no-op runs changed the binary checksum and
+  bounced the daemon.
+- **Pins no longer rejected**: the reserved block was `.1-.15`, which made the
+  requested `.6`/`.7` impossible. Only `.1` belongs to the gateway.
+
 ## [v2.3.0] - 2026-11-26
 
 ### Added
