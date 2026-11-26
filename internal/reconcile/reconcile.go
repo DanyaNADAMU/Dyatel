@@ -95,6 +95,45 @@ func (r *Reconciler) PrepareConsumer(ctx context.Context, h *store.Host, pubKey,
 	return nil
 }
 
+// ensureGatewayAddrs converges the interface's addresses to the transport's
+// gateway pair. Addresses that belong to any configured tunnel network but are
+// not the expected gateway are removed (the rebase case); anything outside our
+// networks is left alone, so an operator's extra address is never touched.
+func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport string) {
+	want4 := r.cfg.GatewayIP(transport)
+	want6 := r.cfg.GatewayIPv6(transport)
+	owned := func(ip net.IP) bool {
+		for _, netStr := range []string{r.cfg.NetV4("wireguard"), r.cfg.NetV4("amneziawg"),
+			r.cfg.NetV6("wireguard"), r.cfg.NetV6("amneziawg")} {
+			if _, cidr, err := parseCIDR(netStr); err == nil && cidr.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, spec := range []struct{ flag, want, mask string }{
+		{"-4", want4, "/32"}, {"-6", want6, "/128"},
+	} {
+		out, err := run(ctx, "ip", spec.flag, "-o", "addr", "show", "dev", ifname)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				continue
+			}
+			addr := strings.Split(fields[3], "/")[0]
+			ip := net.ParseIP(addr)
+			if ip == nil || !owned(ip) || ip.String() == spec.want {
+				continue
+			}
+			_, _ = run(ctx, "ip", "addr", "del", addr+spec.mask, "dev", ifname)
+		}
+		_, _ = run(ctx, "ip", "addr", "replace", spec.want+spec.mask, "dev", ifname)
+	}
+}
+
 // ensureFromDisk is the degraded-mode data plane: with no database the
 // desired state is the last rendered config set on disk, so every wgd-*/awd-*
 // interface that exists as a file but not as a device is brought up. It never
@@ -226,6 +265,12 @@ func (r *Reconciler) pass(ctx context.Context) {
 			// at creation (port conflict) and were left DOWN.
 			st.LastError = fmt.Sprintf("syncconf: %v", err)
 		}
+		// Address self-heal: an interface keeps whatever address it was
+		// created with, so a network change (v2.3 rebase) leaves the gateway
+		// on the old subnet while peers move to the new one - a silent black
+		// hole. Converge the interface address to the transport's gateway now.
+		r.ensureGatewayAddrs(ctx, ifname, h.Transport)
+
 		// routes: endpoint tunnel IPs reachable via this iface. Both sides
 		// need explicit /32 (v4) and /128 (v6) routes: without them replies
 		// to a dial-in endpoint leave via the default route and die on the
