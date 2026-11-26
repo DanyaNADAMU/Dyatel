@@ -102,15 +102,6 @@ func (r *Reconciler) PrepareConsumer(ctx context.Context, h *store.Host, pubKey,
 func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport string) {
 	want4 := r.cfg.GatewayIP(transport)
 	want6 := r.cfg.GatewayIPv6(transport)
-	owned := func(ip net.IP) bool {
-		for _, netStr := range []string{r.cfg.NetV4("wireguard"), r.cfg.NetV4("amneziawg"),
-			r.cfg.NetV6("wireguard"), r.cfg.NetV6("amneziawg")} {
-			if _, cidr, err := parseCIDR(netStr); err == nil && cidr.Contains(ip) {
-				return true
-			}
-		}
-		return false
-	}
 	for _, spec := range []struct{ flag, want, mask string }{
 		{"-4", want4, "/32"}, {"-6", want6, "/128"},
 	} {
@@ -125,7 +116,10 @@ func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport s
 			}
 			addr := strings.Split(fields[3], "/")[0]
 			ip := net.ParseIP(addr)
-			if ip == nil || !owned(ip) || ip.String() == spec.want {
+			// The interface is wholly owned by the daemon: anything that is
+			// not the expected gateway (and not link-local) is stale, which is
+			// exactly the state a network change leaves behind.
+			if ip == nil || ip.IsLinkLocalUnicast() || ip.String() == spec.want {
 				continue
 			}
 			_, _ = run(ctx, "ip", "addr", "del", addr+spec.mask, "dev", ifname)
