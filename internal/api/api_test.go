@@ -42,7 +42,7 @@ func testServer(t *testing.T) *Server {
 		Node:                "test",
 		TunnelIPv4NetWG:     "10.66.66.0/24",
 		TunnelIPv4NetAWG:    "10.77.77.0/24",
-		HostIPMin:           16,
+		HostIPMin:           2,
 		HostIPMax:           250,
 		AWGMTU:              1280,
 		TunnelIPv6NetWG:     "fd66:66::/64",

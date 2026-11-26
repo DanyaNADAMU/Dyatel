@@ -381,7 +381,7 @@ func TestHostAddressPinning(t *testing.T) {
 		usedPort[strconv.Itoa(h.ListenPort)] = true
 	}
 	octet, port := 0, 0
-	for i := 16; i < 200; i++ {
+	for i := 2; i < 200; i++ {
 		if !usedIP["10.66.66."+strconv.Itoa(i)+"/32"] && !usedPort[strconv.Itoa(20000+i)] {
 			octet, port = i, 20000+i
 			break
@@ -435,9 +435,9 @@ func TestHostAddressPinning(t *testing.T) {
 	}); rec.Code < 400 {
 		t.Fatalf("duplicate pinned port accepted: %d %s", rec.Code, rec.Body)
 	}
-	// The gateway block is reserved: .5 must be refused.
+	// The gateway itself is reserved: .1 must be refused.
 	if rec := create("pin-d-"+suffix, map[string]any{
-		"preferred_ipv4": "10.66.66.5",
+		"preferred_ipv4": "10.66.66.1",
 	}); rec.Code < 400 {
 		t.Fatalf("reserved gateway address accepted: %d %s", rec.Code, rec.Body)
 	}

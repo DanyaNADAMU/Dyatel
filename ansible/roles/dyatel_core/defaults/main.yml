@@ -35,8 +35,9 @@ dyatel_core_tunnel_v4_wg: "{{ dyatel_core_tunnel_v4 }}"
 dyatel_core_tunnel_v6_wg: "{{ dyatel_core_tunnel_v6 }}"
 dyatel_core_tunnel_v4_awg: "10.77.77.0/24"
 dyatel_core_tunnel_v6_awg: "fd77:77::/64"
-# .1-.HostIPMin-1 stay reserved for gateways and infrastructure.
-dyatel_core_host_ip_min: 16
+# The gateway holds .1; hosts are carved from HostIPMin upward. Keeping the
+# floor low allows memorable pins (.6, .7).
+dyatel_core_host_ip_min: 2
 dyatel_core_host_ip_max: 250
 # Obfuscation eats headroom and IPv6 has a hard 1280-byte floor.
 dyatel_core_awg_mtu: 1280

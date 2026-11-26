@@ -30,8 +30,9 @@ type Config struct {
 	TunnelIPv4NetAWG string // e.g. 10.77.77.0/24
 	TunnelIPv6NetAWG string // e.g. fd77:77::/64
 
-	// Host part allocation bounds inside a tunnel network: .1-.15 are reserved
-	// for gateways and infrastructure, hosts are carved from HostIPMin upward.
+	// Host part allocation bounds inside a tunnel network: the gateway holds
+	// .1 and hosts are carved from HostIPMin upward. The default leaves .1
+	// alone so memorable low numbers (.6, .7) stay pinnable.
 	HostIPMin int
 	HostIPMax int
 
@@ -149,7 +150,7 @@ func load() *Config {
 		TunnelIPv6NetWG:      env("DYATEL_TUNNEL_V6_WG", env("DYATEL_TUNNEL_V6", "fd66:66::/64")),
 		TunnelIPv4NetAWG:     env("DYATEL_TUNNEL_V4_AWG", env("DYATEL_TUNNEL_V4_WG", env("DYATEL_TUNNEL_V4", "10.66.66.0/24"))),
 		TunnelIPv6NetAWG:     env("DYATEL_TUNNEL_V6_AWG", env("DYATEL_TUNNEL_V6_WG", env("DYATEL_TUNNEL_V6", "fd66:66::/64"))),
-		HostIPMin:            envInt("DYATEL_HOST_IP_MIN", 16),
+		HostIPMin:            envInt("DYATEL_HOST_IP_MIN", 2),
 		HostIPMax:            envInt("DYATEL_HOST_IP_MAX", 250),
 		AWGMTU:               envInt("DYATEL_AWG_MTU", 1280),
 		PortPoolWGMin:        envInt("DYATEL_WG_PORTS_MIN", 51820),

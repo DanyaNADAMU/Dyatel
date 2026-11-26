@@ -62,10 +62,10 @@ func TestGenWireguardDefaultsSkipCoreListenIP(t *testing.T) {
 	out := gen(t, "wireguard", "--name", "demo", "--proxer-pubkey", "PROXERPUB")
 	// .1-.15 are reserved (gateway + infra), so the offline render starts at
 	// the first host address the daemon's allocator would hand out.
-	if !strings.Contains(out, "Address = 10.66.66.16/32") {
-		t.Errorf("proxer should default to 10.66.66.16 (first host address):\n%s", out)
+	if !strings.Contains(out, "Address = 10.66.66.2/32") {
+		t.Errorf("proxer should default to 10.66.66.2 (first host address):\n%s", out)
 	}
-	if strings.Count(out, "AllowedIPs = 10.66.66.16,") != 1 {
+	if strings.Count(out, "AllowedIPs = 10.66.66.2,") != 1 {
 		t.Errorf("proxer tunnel IP should appear exactly once in berg config:\n%s", out)
 	}
 }

@@ -47,7 +47,7 @@ func TestAgainstRealDaemon(t *testing.T) {
 		TunnelIPv4NetAWG:    "10.77.77.0/24",
 		TunnelIPv6NetWG:     "fd66:66::/64",
 		TunnelIPv6NetAWG:    "fd77:77::/64",
-		HostIPMin:           16,
+		HostIPMin:           2,
 		HostIPMax:           250,
 		AWGMTU:              1280,
 		PortPoolWGMin:       51820,
