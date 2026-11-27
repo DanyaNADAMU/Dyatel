@@ -130,7 +130,11 @@ func init() {
 	forwardsCreateCmd.Flags().String("proto", "tcp", "protocol: tcp or udp")
 	forwardsCreateCmd.Flags().String("label", "", "optional label")
 
-	forwardsCmd.AddCommand(forwardsListCmd, forwardsCreateCmd, forwardsRmCmd)
+	forwardsCmd.AddCommand(forwardsListCmd, forwardsCreateCmd, forwardsRmCmd, forwardsDNSCmd)
+
+	forwardsDNSSetCmd.Flags().String("name", "", "subdomain label (e.g. mc1) or FQDN under the daemon DNS zone")
+	_ = forwardsDNSSetCmd.MarkFlagRequired("name")
+	forwardsDNSCmd.AddCommand(forwardsDNSListCmd, forwardsDNSSetCmd, forwardsDNSRmCmd)
 
 	carapace.Gen(forwardsCreateCmd).FlagCompletion(carapace.ActionMap{
 		"proto": carapace.ActionValues("tcp", "udp"),
@@ -139,4 +143,82 @@ func init() {
 		carapace.ActionValues(),
 		carapace.ActionValues(),
 	)
+}
+
+var forwardsDNSCmd = &cobra.Command{
+	Use:   "dns",
+	Short: "Manage Cloudflare DNS records for forwards",
+}
+
+var forwardsDNSListCmd = &cobra.Command{
+	Use:   "list HOSTID",
+	Short: "List DNS records bound to a host's forwards",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := clientFrom(cmd)
+		if err != nil {
+			return err
+		}
+		raw, err := c.Do(http.MethodGet, "/hosts/"+args[0]+"/dns", nil)
+		if err != nil {
+			return err
+		}
+		return output(cmd, raw, func(w io.Writer) error {
+			var ds []client.DNSRecord
+			if err := json.Unmarshal(raw, &ds); err != nil {
+				return err
+			}
+			rows := make([][]string, 0, len(ds))
+			for _, d := range ds {
+				rows = append(rows, []string{d.ForwardID, d.Name, dash(d.CloudflareID), d.CreatedAt})
+			}
+			printTable(w, []string{"FORWARD_ID", "NAME", "CF_ID", "CREATED_AT"}, rows)
+			return nil
+		})
+	},
+}
+
+var forwardsDNSSetCmd = &cobra.Command{
+	Use:   "set FORWARDID",
+	Short: "Bind or rename a DNS record for a forward",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name, _ := cmd.Flags().GetString("name")
+		c, err := clientFrom(cmd)
+		if err != nil {
+			return err
+		}
+		raw, err := c.Do(http.MethodPost, "/forwards/"+args[0]+"/dns", map[string]string{"name": name})
+		if err != nil {
+			return err
+		}
+		return output(cmd, raw, func(w io.Writer) error {
+			var d client.DNSRecord
+			if err := json.Unmarshal(raw, &d); err != nil {
+				return err
+			}
+			printKV(w, []kv{
+				{"id", d.ID},
+				{"forward_id", d.ForwardID},
+				{"name", d.Name},
+				{"cloudflare_id", dash(d.CloudflareID)},
+			})
+			return nil
+		})
+	},
+}
+
+var forwardsDNSRmCmd = &cobra.Command{
+	Use:     "rm FORWARDID",
+	Aliases: []string{"delete"},
+	Short:   "Remove a forward's DNS record",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := clientFrom(cmd)
+		if err != nil {
+			return err
+		}
+		_, err = c.Do(http.MethodDelete, "/forwards/"+args[0]+"/dns", nil)
+		return err
+	},
 }
