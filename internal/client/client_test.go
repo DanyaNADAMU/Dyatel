@@ -69,6 +69,8 @@ func newTestDaemon(t *testing.T) (*Client, *recorder) {
 	})
 	handle("/api/v1/hosts/6ba7b810-9dad-11d1-80b4-00c04fd430c8/", 200, cannedHost)
 	handle("/api/v1/hosts/6ba7b810-9dad-11d1-80b4-00c04fd430c8/forwards", 200, "["+cannedForward+"]")
+	handle("/api/v1/hosts/6ba7b810-9dad-11d1-80b4-00c04fd430c8/dns", 200, `[{"id":"d1","forward_id":"f1","name":"mc1.test.nada.mu","created_at":"2026-11-27T00:00:00Z"}]`)
+	handle("/api/v1/forwards/f1/dns", 200, `{"id":"d1","forward_id":"f1","name":"mc1.test.nada.mu","created_at":"2026-11-27T00:00:00Z"}`)
 	handle("/api/v1/hosts/6ba7b810-9dad-11d1-80b4-00c04fd430c8/config/client", 200, "[Interface]\nPrivateKey = ...\n")
 	handle("/api/v1/hosts/new/forwards", 200, cannedForward)
 	handle("/api/v1/hosts/new/", 200, cannedHost)
@@ -198,6 +200,17 @@ func TestGetHostAndForwards(t *testing.T) {
 	}
 	if rec.path != "/api/v1/hosts/6ba7b810-9dad-11d1-80b4-00c04fd430c8/forwards" {
 		t.Fatalf("forwards path: %s", rec.path)
+	}
+	ds, err := cl.ListHostDNS(h.ID)
+	if err != nil || len(ds) != 1 || ds[0].Name != "mc1.test.nada.mu" {
+		t.Fatalf("list host dns: %v %+v", err, ds)
+	}
+	d, err := cl.SetForwardDNS("f1", "mc1")
+	if err != nil || d.Name != "mc1.test.nada.mu" {
+		t.Fatalf("set forward dns: %v %+v", err, d)
+	}
+	if err := cl.DeleteForwardDNS("f1"); err != nil {
+		t.Fatalf("delete forward dns: %v", err)
 	}
 }
 

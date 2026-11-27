@@ -95,6 +95,15 @@ trust — they police it.
 Token format: `dyatel_<32 bytes base64url>`; only the hash is stored.
 CLI sends `Authorization: Bearer dyatel_…`.
 
+**Trusted identity header** (`X-Dyatel-Sub`): an optional path for a
+fronting proxy that authenticates users itself (nginx `auth_request`,
+`oauth2-proxy`). It is **disabled unless `DYATEL_TRUST_SUB_HEADER=true`**,
+because the header is plain text and attacker-controlled: honouring it by
+default lets anyone who can reach the API sign in as anyone, including a
+name from the Authentik admin group. A proxy that enables it must also
+strip the header from inbound requests; the shipped panel vhost always
+sends it empty.
+
 ### 3.3 hosts
 
 | column | type | notes |
@@ -344,17 +353,24 @@ GET    /api/v1/hosts/{id}/config        # rendered wg-quick conf (host side)
 GET    /api/v1/hosts/{id}/forwards
 POST   /api/v1/hosts/{id}/forwards      # owner only (§4)
 DELETE /api/v1/hosts/{id}/forwards/{fid}
-POST   /api/v1/forwards/{fid}/dns      # {name} -> record + CF sync (deferred)
+GET    /api/v1/hosts/{id}/dns           # forward DNS records for host
+POST   /api/v1/forwards/{fid}/dns       # {name} -> record + CF sync
 DELETE /api/v1/forwards/{fid}/dns
 
 POST   /api/v1/reconcile                # SIGUSR1-equivalent: trigger loop NOW
 GET    /api/v1/status                   # drift report (last apply, diffs)
 ```
 
-Deferred to a later milestone: DNS records (`/forwards/{fid}/dns`,
-`dns_records`, Cloudflare upsert). Until it lands, forwards are used by
-`IP:port` on the gateway; the table and the config knob exist so the
-feature can arrive without a schema change.
+DNS records (`/forwards/{fid}/dns`, `dns_records`, Cloudflare upsert/prune)
+synchronize `A` (and optional `AAAA`) records for active hosts when
+`DYATEL_CLOUDFLARE_TOKEN` is configured; when the token is absent, forwards
+remain usable via `IP:port`. Records are owned by comment prefix `dyatel `
+and are never taken over from another owner: a name already bound to another
+forward fails with `409`, sync refuses to overwrite foreign records (the error
+is surfaced under `_dns`), and pruning only touches `A`/`AAAA` records of this
+node. Mutations sync immediately; a drift check runs every
+`DYATEL_DNS_SYNC_SEC` (300s default), and the last attempt is reported under
+`_dns` in `/status`.
 
 All mutations are **optimistic**: core validates, writes to Postgres,
 and returns `202 {reconcile_queued}`. Actual network application

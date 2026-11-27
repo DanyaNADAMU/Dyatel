@@ -140,6 +140,7 @@ func TestTrustedSubKeepsExistingDisplayName(t *testing.T) {
 	a := New(&config.Config{
 		OIDCIntrospectionURL: srv.URL + "/application/o/userinfo/",
 		AuthentikAdminGroup:  "authentik Admins",
+		TrustSubHeader:       true,
 	}, nil)
 	a.users = users
 
@@ -289,5 +290,17 @@ func TestOIDCIntrospectionCompat(t *testing.T) {
 	inactiveReq.Header.Set("Authorization", "Bearer inactive-tok")
 	if _, err := a.Authenticate(inactiveReq); err == nil {
 		t.Fatal("expected inactive token rejection")
+	}
+}
+
+// A client controls the identity header, so honouring it without an explicit
+// opt-in would let anyone who can reach the API sign in as anyone else.
+func TestTrustedSubHeaderIsRejectedByDefault(t *testing.T) {
+	a := New(&config.Config{}, nil)
+	a.users = &fakeUserSync{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set(SubclaimHeader, "authentik Admins")
+	if _, err := a.Authenticate(req); err == nil {
+		t.Fatal("trusted-sub header was honoured without an explicit opt-in")
 	}
 }

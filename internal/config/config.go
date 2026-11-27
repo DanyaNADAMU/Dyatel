@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -51,6 +52,8 @@ type Config struct {
 
 	// Public endpoint hosts used in rendered configs.
 	PublicEndpointHost string // e.g. dyatel.test.nada.mu
+	PublicIPv4         string // e.g. 81.30.105.65 (for DNS A records)
+	PublicIPv6         string // e.g. 2a13:d207:494:21::1 (for DNS AAAA records)
 	CoreListenIP       string // berg's wg interface address, e.g. 10.13.36.1
 
 	// Authentik
@@ -58,6 +61,11 @@ type Config struct {
 	OIDCClientID         string
 	OIDCClientSecret     string
 	AuthentikAdminGroup  string
+	// TrustSubHeader enables the X-Dyatel-Sub identity path for a fronting
+	// proxy that authenticates users itself. It is off by default: the header
+	// is plain text, so honouring it unconditionally lets any client that can
+	// reach the API impersonate anyone (including an admin-group name).
+	TrustSubHeader bool
 
 	// Break-glass admin (works when Authentik is down).
 	FallbackAdminUser string
@@ -70,7 +78,11 @@ type Config struct {
 	WGIfname        string // e.g. wg-dyatel
 	UFWBinary       string
 
-	DNSZone string // e.g. test.nada.mu (records under it, CF later)
+	CloudflareToken string // optional CF Zone:DNS:Edit token
+	DNSZone         string // e.g. test.nada.mu
+	// DNSSyncSec is the drift-check cadence; mutations sync immediately via
+	// Trigger, so the periodic pass only heals out-of-band changes.
+	DNSSyncSec int
 }
 
 func Load() (*Config, error) {
@@ -93,6 +105,18 @@ func envInt(key string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
+	}
+	return def
+}
+
+// envBool is deliberately strict: only an explicit "true"/"1" turns a
+// security-relevant switch on, so a typo can never widen the attack surface.
+func envBool(key string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
 	}
 	return def
 }
@@ -160,11 +184,14 @@ func load() *Config {
 		PortPoolXrayMin:      envInt("DYATEL_XRAY_PORTS_MIN", 5200),
 		PortPoolXrayMax:      envInt("DYATEL_XRAY_PORTS_MAX", 5299),
 		PublicEndpointHost:   env("DYATEL_PUBLIC_ENDPOINT", "dyatel.test.nada.mu"),
+		PublicIPv4:           env("DYATEL_PUBLIC_IPV4", ""),
+		PublicIPv6:           env("DYATEL_PUBLIC_IPV6", ""),
 		CoreListenIP:         env("DYATEL_CORE_LISTEN_IP", "10.13.36.1"),
 		OIDCIntrospectionURL: env("DYATEL_OIDC_INTROSPECTION_URL", ""),
 		OIDCClientID:         env("DYATEL_OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:     env("DYATEL_OIDC_CLIENT_SECRET", ""),
 		AuthentikAdminGroup:  env("DYATEL_OIDC_ADMIN_GROUP", "Dyatel Admins"),
+		TrustSubHeader:       envBool("DYATEL_TRUST_SUB_HEADER", false),
 		FallbackAdminUser:    env("DYATEL_FALLBACK_ADMIN_USER", ""),
 		FallbackAdminHash:    env("DYATEL_FALLBACK_ADMIN_HASH", ""),
 		WGConfigPath:         env("DYATEL_WG_CONFIG_PATH", "/etc/wireguard/wg-dyatel.conf"),
@@ -172,7 +199,9 @@ func load() *Config {
 		XrayServiceName:      env("DYATEL_XRAY_SERVICE", "xray@dyatel"),
 		WGIfname:             env("DYATEL_WG_IFNAME", "wg-dyatel"),
 		UFWBinary:            env("DYATEL_UFW_PATH", "/usr/sbin/ufw"),
+		CloudflareToken:      env("DYATEL_CLOUDFLARE_TOKEN", ""),
 		DNSZone:              env("DYATEL_DNS_ZONE", "test.nada.mu"),
+		DNSSyncSec:           envInt("DYATEL_DNS_SYNC_SEC", 300),
 	}
 	return c
 }

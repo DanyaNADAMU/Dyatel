@@ -54,7 +54,10 @@ func testServer(t *testing.T) *Server {
 		PortPoolXrayMin:     5200,
 		PortPoolXrayMax:     5299,
 		AuthentikAdminGroup: "Dyatel Admins",
-		FallbackAdminUser:   "breakglass",
+		// The tests inject identities through the trusted header; production
+		// leaves it off so no client can assert one.
+		TrustSubHeader:    true,
+		FallbackAdminUser: "breakglass",
 		// Real argon2id PHC for password "correcthorse" (m=64MiB is slow but
 		// fine for a handful of requests in tests).
 		FallbackAdminHash: "$argon2id$v=19$m=65536,t=2,p=1$0Zh50ymKo7qzu6LzLbJbyw$++EE7ecjdmShgjkPBEIKolDFe0PuLkQ5OqyZrqUmhL0",
@@ -270,5 +273,102 @@ func TestHostLifecycle(t *testing.T) {
 	}
 	if rec := do(t, s, "GET", path, owner, "", nil); rec.Code != 404 {
 		t.Fatalf("deleted host get: got %d, want 404", rec.Code)
+	}
+}
+
+func TestNormalizeDNSName(t *testing.T) {
+	if got, err := normalizeDNSName("mc1", "test.nada.mu"); err != nil || got != "mc1.test.nada.mu" {
+		t.Fatalf("short label: got (%q, %v)", got, err)
+	}
+	if got, err := normalizeDNSName("MC1.Test.Nada.Mu.", "test.nada.mu"); err != nil || got != "mc1.test.nada.mu" {
+		t.Fatalf("fqdn normalization: got (%q, %v)", got, err)
+	}
+	for _, bad := range []string{"", "test.nada.mu", "-bad", "bad-", "bad_char", "a..b"} {
+		if _, err := normalizeDNSName(bad, "test.nada.mu"); err == nil {
+			t.Fatalf("expected error for %q", bad)
+		}
+	}
+}
+
+func TestForwardDNSLifecycle(t *testing.T) {
+	s := testServer(t)
+	s.cfg.DNSZone = "test.nada.mu"
+	owner := "dns-owner@example.test"
+	consRec := do(t, s, "GET", "/api/v1/me", "dns-cons@example.test", "", nil)
+	if consRec.Code != 200 {
+		t.Fatalf("provision consumer: %d", consRec.Code)
+	}
+	var cons struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(consRec.Body.Bytes(), &cons)
+
+	hName := "dns-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	hRec := do(t, s, "POST", "/api/v1/hosts", owner, "", map[string]any{
+		"name":          hName,
+		"wg_public_key": "aGVsbG8gd29ybGQgMTIzNDU2Nzg5MEFCQ0RFRg==",
+		"transport":     "wireguard",
+		"consumer_id":   cons.ID,
+	})
+	if hRec.Code != 200 && hRec.Code != 201 {
+		t.Fatalf("create host: %d %s", hRec.Code, hRec.Body)
+	}
+	var h store.Host
+	_ = json.Unmarshal(hRec.Body.Bytes(), &h)
+	t.Cleanup(func() {
+		_ = do(t, s, "DELETE", "/api/v1/hosts/"+h.ID.String(), owner, "", nil)
+	})
+
+	fRec := do(t, s, "POST", "/api/v1/hosts/"+h.ID.String()+"/forwards", owner, "", map[string]any{
+		"public_port": 25577, "target_port": 25577, "proto": "tcp", "label": "mc",
+	})
+	if fRec.Code != 200 {
+		t.Fatalf("create forward: %d %s", fRec.Code, fRec.Body)
+	}
+	var fwd store.Forward
+	_ = json.Unmarshal(fRec.Body.Bytes(), &fwd)
+
+	sub := "play-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	// Stranger / consumer cannot bind DNS on someone else's forward.
+	if rec := do(t, s, "POST", "/api/v1/forwards/"+fwd.ID.String()+"/dns", "dns-cons@example.test", "", map[string]string{"name": sub}); rec.Code != 403 {
+		t.Fatalf("consumer set dns: got %d, want 403", rec.Code)
+	}
+
+	dRec := do(t, s, "POST", "/api/v1/forwards/"+fwd.ID.String()+"/dns", owner, "", map[string]string{"name": sub})
+	if dRec.Code != 200 {
+		t.Fatalf("set dns: %d %s", dRec.Code, dRec.Body)
+	}
+	var dr store.DNSRecord
+	_ = json.Unmarshal(dRec.Body.Bytes(), &dr)
+	if dr.Name != sub+".test.nada.mu" {
+		t.Fatalf("dns name = %q, want %s.test.nada.mu", dr.Name, sub)
+	}
+
+	// A second forward cannot claim a name that is already bound: the unique
+	// constraint must surface as 409, not as a raw Postgres error.
+	f2Rec := do(t, s, "POST", "/api/v1/hosts/"+h.ID.String()+"/forwards", owner, "", map[string]any{
+		"public_port": 25578, "target_port": 25578, "proto": "tcp", "label": "mc2",
+	})
+	if f2Rec.Code != 200 {
+		t.Fatalf("create second forward: %d %s", f2Rec.Code, f2Rec.Body)
+	}
+	var fwd2 store.Forward
+	_ = json.Unmarshal(f2Rec.Body.Bytes(), &fwd2)
+	if rec := do(t, s, "POST", "/api/v1/forwards/"+fwd2.ID.String()+"/dns", owner, "", map[string]string{"name": sub}); rec.Code != 409 {
+		t.Fatalf("duplicate dns name: got %d %s, want 409", rec.Code, rec.Body)
+	}
+
+	listRec := do(t, s, "GET", "/api/v1/hosts/"+h.ID.String()+"/dns", "dns-cons@example.test", "", nil)
+	if listRec.Code != 200 {
+		t.Fatalf("list host dns: %d %s", listRec.Code, listRec.Body)
+	}
+	var list []store.DNSRecord
+	_ = json.Unmarshal(listRec.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].Name != dr.Name {
+		t.Fatalf("unexpected host dns list: %+v", list)
+	}
+
+	if delRec := do(t, s, "DELETE", "/api/v1/forwards/"+fwd.ID.String()+"/dns", owner, "", nil); delRec.Code != 204 {
+		t.Fatalf("delete dns: got %d %s", delRec.Code, delRec.Body)
 	}
 }

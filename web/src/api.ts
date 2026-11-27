@@ -1,4 +1,4 @@
-import type { EventItem, Forward, Host, Me, Token, UserInfo } from "./types";
+import type { DNSRecord, EventItem, Forward, Host, Me, StatusResponse, Token, UserInfo } from "./types";
 import { authHeader, getCred } from "./session";
 
 export class ApiError extends Error {
@@ -47,6 +47,10 @@ export const api = {
     consumer_id: string;
     keepalive?: number;
     params?: unknown;
+    node?: string;
+    preferred_ipv4?: string;
+    preferred_ipv6?: string;
+    preferred_port?: number;
   }) =>
     req<Host>("/hosts/", {
       method: "POST",
@@ -74,9 +78,17 @@ export const api = {
     }),
   deleteForward: (hostId: string, fid: string) =>
     req<void>(`/hosts/${hostId}/forwards/${fid}`, { method: "DELETE" }),
+  hostDNS: (hostId: string) => req<DNSRecord[]>(`/hosts/${hostId}/dns`),
+  setForwardDNS: (forwardId: string, name: string) =>
+    req<DNSRecord>(`/forwards/${forwardId}/dns`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  deleteForwardDNS: (forwardId: string) =>
+    req<void>(`/forwards/${forwardId}/dns`, { method: "DELETE" }),
   proxerConfig: (id: string) => req<string>(`/hosts/${id}/config/proxer`),
   clientConfig: (id: string) => req<string>(`/hosts/${id}/config/client`),
-  status: () => req<Record<string, unknown>>("/status"),
+  status: () => req<StatusResponse>("/status"),
   // Post-creation host edits: endpoint, keepalive and the invited consumer.
   patchHost: (
     id: string,

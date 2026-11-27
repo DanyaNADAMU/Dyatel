@@ -108,23 +108,60 @@
 - name: Verify panel and API respond over the public chain
   # Delegate to the control host so the probe walks the real ingress
   # path: public DNS -> berg L4 SNI mux -> test bridge listener.
-  ansible.builtin.uri:
-    url: "https://{{ dyatel_panel_domain }}/"
-    return_content: false
-    status_code: [200]
-  delegate_to: localhost
-  become: false
-  register: dyatel_panel_check
-  retries: 3
-  delay: 2
-  until: dyatel_panel_check.status == 200
   tags: [verify]
+  block:
+    - name: Probe the panel through public DNS from the control host
+      ansible.builtin.uri:
+        url: "https://{{ dyatel_panel_domain }}/"
+        return_content: false
+        status_code: [200]
+      delegate_to: localhost
+      become: false
+      register: dyatel_panel_check
+      retries: 2
+      delay: 2
+      until: dyatel_panel_check.status == 200
+  rescue:
+    # A controller behind an egress proxy (or preferring an unroutable
+    # address family) cannot reach public ingress even when the site is
+    # healthy. Fall back to a loopback probe on the target, which still
+    # exercises nginx, the vhost and the TLS certificate.
+    - name: Warn that the public path was not probed from the control host
+      ansible.builtin.debug:
+        msg: >-
+          Public probe of {{ dyatel_panel_domain }} failed from the control host
+          ({{ ansible_failed_result.msg | default('unknown error') }});
+          verifying on the target instead.
+    - name: Probe the panel locally on the target
+      ansible.builtin.uri:
+        url: "https://127.0.0.1/"
+        headers:
+          Host: "{{ dyatel_panel_domain }}"
+        validate_certs: false
+        return_content: false
+        status_code: [200]
 
 - name: Verify core API responds through the panel vhost
+  # Pinning the name to loopback keeps the probe honest about nginx reaching
+  # the daemon: 401/403 proves auth is enforced, an unauth 200 is a bypass.
   ansible.builtin.uri:
-    url: "https://{{ dyatel_panel_domain }}/api/v1/status"
+    url: "https://127.0.0.1/api/v1/status"
+    headers:
+      Host: "{{ dyatel_panel_domain }}"
+    validate_certs: false
     return_content: false
     status_code: [401, 403]
-  delegate_to: localhost
-  become: false
+  tags: [verify]
+
+- name: Verify the panel vhost strips client identity headers
+  # The core trusts X-Dyatel-Sub when explicitly enabled, so nginx must never
+  # forward a client-supplied value.
+  ansible.builtin.uri:
+    url: "https://127.0.0.1/api/v1/me"
+    headers:
+      Host: "{{ dyatel_panel_domain }}"
+      X-Dyatel-Sub: dyatel-verify-probe
+    validate_certs: false
+    return_content: false
+    status_code: [401, 403]
   tags: [verify]

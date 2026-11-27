@@ -39,6 +39,46 @@ export interface Forward {
   label: string;
 }
 
+export interface DNSRecord {
+  id: string;
+  forward_id: string;
+  name: string;
+  cloudflare_id?: string | null;
+  created_at: string;
+}
+
+export interface PeerEndpointStatus {
+  public_key: string;
+  endpoint?: string;
+  last_handshake?: string;
+  transfer_rx?: number;
+  transfer_tx?: number;
+}
+
+export interface HostRuntimeStatus {
+  name: string;
+  interface: string;
+  state: string;
+  listen_port: number;
+  transport: string;
+  endpoints: Record<string, PeerEndpointStatus>;
+  drift: boolean;
+  last_error?: string;
+}
+
+export interface DNSStatus {
+  enabled: boolean;
+  last_sync?: string;
+  last_error?: string;
+}
+
+export interface StatusResponse {
+  _checked_at?: string;
+  _error?: HostRuntimeStatus;
+  _dns?: DNSStatus;
+  [hostID: string]: unknown;
+}
+
 export interface Token {
   id: string;
   label: string;

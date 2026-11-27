@@ -8,10 +8,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	// ErrConflict is a unique-constraint violation translated at the store
+	// boundary, so callers never have to parse Postgres error text.
+	ErrConflict = errors.New("conflict")
+)
 
 type Store struct {
 	Pool *pgxpool.Pool
@@ -485,4 +491,106 @@ func (s *Store) UsedPorts(ctx context.Context, node string) (map[int]bool, error
 		m[p] = true
 	}
 	return m, rows.Err()
+}
+
+// DNSRecord is an optional hostname bound to one forward (RFC §3.5).
+type DNSRecord struct {
+	ID           uuid.UUID `json:"id"`
+	ForwardID    uuid.UUID `json:"forward_id"`
+	Name         string    `json:"name"`
+	CloudflareID *string   `json:"cloudflare_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (s *Store) ForwardByID(ctx context.Context, id uuid.UUID) (*Forward, error) {
+	var f Forward
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, host_id, node, public_port, target_port, proto, label
+		 FROM forwards WHERE id=$1`, id).
+		Scan(&f.ID, &f.HostID, &f.Node, &f.PublicPort, &f.TargetPort, &f.Proto, &f.Label)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &f, err
+}
+
+func (s *Store) DNSRecordsByHost(ctx context.Context, hostID uuid.UUID) ([]DNSRecord, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT d.id, d.forward_id, d.name, d.cloudflare_id, d.created_at
+		 FROM dns_records d
+		 JOIN forwards f ON f.id = d.forward_id
+		 WHERE f.host_id=$1
+		 ORDER BY d.created_at`, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DNSRecord{}
+	for rows.Next() {
+		var d DNSRecord
+		if err := rows.Scan(&d.ID, &d.ForwardID, &d.Name, &d.CloudflareID, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertDNSRecord(ctx context.Context, forwardID uuid.UUID, name string) (*DNSRecord, error) {
+	var d DNSRecord
+	err := s.Pool.QueryRow(ctx,
+		`INSERT INTO dns_records (forward_id, name)
+		 VALUES ($1, $2)
+		 ON CONFLICT (forward_id) DO UPDATE SET
+		   name = EXCLUDED.name,
+		   cloudflare_id = CASE WHEN dns_records.name = EXCLUDED.name THEN dns_records.cloudflare_id ELSE NULL END
+		 RETURNING id, forward_id, name, cloudflare_id, created_at`, forwardID, name).
+		Scan(&d.ID, &d.ForwardID, &d.Name, &d.CloudflareID, &d.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrConflict
+		}
+		return nil, err
+	}
+	return &d, nil
+}
+
+func (s *Store) DeleteDNSRecordByForward(ctx context.Context, forwardID uuid.UUID) error {
+	ct, err := s.Pool.Exec(ctx, `DELETE FROM dns_records WHERE forward_id=$1`, forwardID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ActiveDNSRecordsByNode(ctx context.Context, node string) ([]DNSRecord, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT d.id, d.forward_id, d.name, d.cloudflare_id, d.created_at
+		 FROM dns_records d
+		 JOIN forwards f ON f.id = d.forward_id
+		 JOIN hosts h ON h.id = f.host_id
+		 WHERE h.node = $1 AND h.state = 'active'
+		 ORDER BY d.created_at`, node)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DNSRecord{}
+	for rows.Next() {
+		var d DNSRecord
+		if err := rows.Scan(&d.ID, &d.ForwardID, &d.Name, &d.CloudflareID, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetDNSCloudflareID(ctx context.Context, id uuid.UUID, cfID string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE dns_records SET cloudflare_id=$2 WHERE id=$1`, id, cfID)
+	return err
 }

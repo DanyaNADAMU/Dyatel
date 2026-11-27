@@ -21,7 +21,9 @@ dyatel_core_env_file: "{{ dyatel_core_config_dir }}/core.env"
 # Source: local Dyatel checkout on the control host (built and shipped,
 # utka-style); no release artifacts exist yet (RFC §9: core binary install
 # is Ansible's job).
-dyatel_core_local_src: "{{ playbook_dir }}/../.."
+# Anchor to the role, not the playbook: the same role is driven from this
+# repo's playbooks and from the Infra playbook, whose playbook_dir differs.
+dyatel_core_local_src: "{{ role_path }}/../../.."
 
 # Network (RFC §4a topology)
 dyatel_core_bind: "127.0.0.1:8100"
@@ -88,8 +90,17 @@ dyatel_core_db_pool_max: 4
 dyatel_core_db_manage: true
 
 # Cloudflare (RFC §3.5 dns_records)
-dyatel_core_cloudflare_token: "{{ vault_dyatel_cloudflare_token | default('') }}"
-dyatel_core_dns_zone: "{{ dyatel_core_base_domain | default('nada.mu') }}"
+dyatel_core_cloudflare_token: >-
+  {{
+    vault_dyatel_cloudflare_token
+    if (vault_dyatel_cloudflare_token | default('') | length > 0 and 'CHANGE_ME' not in (vault_dyatel_cloudflare_token | default('')))
+    else (vault_cloudflare_api_token | default(''))
+  }}
+dyatel_core_dns_zone: "{{ dyatel_core_base_domain | default(base_domain | default('test.nada.mu')) }}"
+# Mutations sync DNS immediately; this is only the drift-check cadence.
+dyatel_core_dns_sync_sec: 300
+dyatel_core_public_ipv4: "{{ public_ip | default('') }}"
+dyatel_core_public_ipv6: "{{ ipv6_base_ip | default('') }}"
 
 # Packages (RFC §9 table). amneziawg-tools is NOT in Debian 13 repos and
 # AWG transport is Phase 1b anyway; add it via override once needed

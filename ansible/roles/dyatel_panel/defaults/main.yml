@@ -9,7 +9,9 @@ dyatel_panel_state: "present"
 
 # Source: local Dyatel checkout on the control host; the SPA is built
 # there and the dist/ is shipped (same build-and-ship path as the core).
-dyatel_panel_local_src: "{{ playbook_dir }}/../.."
+# Anchor to the role, not the playbook: the same role is driven from this
+# repo's playbooks and from the Infra playbook, whose playbook_dir differs.
+dyatel_panel_local_src: "{{ role_path }}/../../.."
 
 # Domains: a single canonical origin for both the SPA and its same-origin
 # /api/v1 mount. The wildcard certificate covers exactly one label, so no
