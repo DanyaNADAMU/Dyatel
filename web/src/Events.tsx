@@ -1,37 +1,33 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
+import { useI18n } from "./i18n";
 
 // Audit feed. Admins read every action (moderation); everyone else sees only
 // their own trail — scoping happens server-side, the UI just renders.
 export default function Events({ isAdmin }: { isAdmin: boolean }) {
+  const { t } = useI18n();
   const evs = useQuery({
     queryKey: ["events", isAdmin],
     queryFn: () => api.events(isAdmin ? 200 : 100),
   });
 
-  if (evs.isPending) return <p className="text-sm opacity-60">Loading…</p>;
-  if (evs.isError)
-    return <p className="text-sm text-red-600">{String(evs.error.message)}</p>;
-  if (evs.data.length === 0)
-    return <p className="text-sm opacity-60">No events recorded yet.</p>;
+  if (evs.isPending) return <p className="text-sm opacity-60">{t.loading}</p>;
+  if (evs.isError) return <p className="text-sm text-red-600">{String(evs.error.message)}</p>;
+  if (evs.data.length === 0) return <p className="text-sm opacity-60">{t.noEvents}</p>;
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-medium">Activity</h2>
-        <p className="text-sm opacity-70 mt-1">
-          {isAdmin
-            ? "Every mutation in the system, newest first."
-            : "Your own actions, newest first."}
-        </p>
+        <h2 className="text-lg font-medium">{t.activityTitle}</h2>
+        <p className="text-sm opacity-70 mt-1">{isAdmin ? t.activityAll : t.activityOwn}</p>
       </div>
       <table className="w-full text-sm">
         <thead className="text-left text-xs opacity-60">
           <tr>
-            <th className="py-2 pr-4 font-normal">When</th>
-            <th className="py-2 pr-4 font-normal">Action</th>
-            <th className="py-2 pr-4 font-normal">Object</th>
-            <th className="py-2 font-normal">Auth</th>
+            <th className="py-2 pr-4 font-normal">{t.thWhen}</th>
+            <th className="py-2 pr-4 font-normal">{t.thAction}</th>
+            <th className="py-2 pr-4 font-normal">{t.thObject}</th>
+            <th className="py-2 font-normal">{t.thAuth}</th>
           </tr>
         </thead>
         <tbody>

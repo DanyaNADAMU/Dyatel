@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import { complete, mgr, signin } from "./auth";
 import { clearCred, getCred, setCred, type Credential } from "./session";
+import { LangProvider, useI18n } from "./i18n";
 import Hosts from "./Hosts";
 import Status from "./Status";
 import Tokens from "./Tokens";
@@ -12,6 +13,29 @@ import Events from "./Events";
 //  - Authentik OIDC code flow (PKCE) for normal humans;
 //  - break-glass Basic (the single fallback admin) for Authentik outages.
 export default function App() {
+  return (
+    <LangProvider>
+      <AppInner />
+    </LangProvider>
+  );
+}
+
+function LangToggle() {
+  const { lang, setLang } = useI18n();
+  return (
+    <button
+      type="button"
+      className="rounded border border-zinc-300 dark:border-zinc-700 px-2 py-0.5 text-xs font-mono opacity-80 hover:opacity-100"
+      onClick={() => setLang(lang === "ru" ? "en" : "ru")}
+      title="Switch language / Переключить язык"
+    >
+      {lang.toUpperCase()}
+    </button>
+  );
+}
+
+function AppInner() {
+  const { t } = useI18n();
   const [cred, setCredState] = useState<Credential | null>(getCred());
   const [busy, setBusy] = useState(getCred() === null);
   const [authErr, setAuthErr] = useState<string | null>(null);
@@ -41,7 +65,7 @@ export default function App() {
           }
         }
       } catch (e) {
-        setAuthErr(`Authentik sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+        setAuthErr(`${t.oidcFailed}: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         if (hasCallbackParams) {
           history.replaceState(null, "", location.pathname);
@@ -61,7 +85,7 @@ export default function App() {
     if (c?.auth === "oidc") location.href = `${location.origin}${location.pathname}`;
   };
 
-  if (busy) return <Shell>Loading…</Shell>;
+  if (busy) return <Shell>{t.loading}</Shell>;
   if (!cred)
     return (
       <Login
@@ -86,6 +110,7 @@ function Login({
   onOidc: () => Promise<void>;
   onBasic: (c: Credential) => void;
 }) {
+  const { t } = useI18n();
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [err, setErr] = useState<string | null>(initialError);
@@ -97,7 +122,7 @@ function Login({
     try {
       await onOidc();
     } catch (e) {
-      setErr(`Authentik sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(`${t.oidcFailed}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -109,31 +134,29 @@ function Login({
     if (r.ok) {
       onBasic({ auth: "basic", header });
     } else {
-      setErr(`authentication failed (${r.status})`);
+      setErr(`${t.authFailed} (${r.status})`);
     }
   };
 
   return (
     <Shell>
-      <div className="max-w-sm mx-auto mt-24 space-y-6">
+      <div className="flex justify-end">
+        <LangToggle />
+      </div>
+      <div className="max-w-sm mx-auto mt-20 space-y-6">
         <div className="text-center">
           <h1 className="text-3xl font-semibold">Dyatel</h1>
-          <p className="text-sm opacity-70 mt-2">
-            Tunnel manager — hosts, forwards and rendered configs for proxers
-            and clients.
-          </p>
+          <p className="text-sm opacity-70 mt-2">{t.tagline}</p>
         </div>
         <button
           className="w-full rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-4 py-2.5 font-medium hover:opacity-90"
           onClick={() => void tryOidc()}
         >
-          Sign in with Authentik
+          {t.signInAuthentik}
         </button>
         {err && <p className="text-xs text-red-600">{err}</p>}
         <details className="text-sm">
-          <summary className="opacity-60 cursor-pointer select-none">
-            Break-glass admin access
-          </summary>
+          <summary className="opacity-60 cursor-pointer select-none">{t.breakGlass}</summary>
           <form
             className="mt-3 space-y-2"
             onSubmit={(e) => {
@@ -144,14 +167,14 @@ function Login({
           >
             <input
               className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2"
-              placeholder="fallback admin user"
+              placeholder={t.fallbackUser}
               value={user}
               onChange={(e) => setUser(e.target.value)}
             />
             <input
               className="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-transparent px-3 py-2"
               type="password"
-              placeholder="password"
+              placeholder={t.password}
               value={pass}
               onChange={(e) => setPass(e.target.value)}
             />
@@ -159,9 +182,8 @@ function Login({
               className="w-full rounded-lg border border-zinc-400 dark:border-zinc-600 px-3 py-2 font-medium"
               type="submit"
             >
-              Sign in (Basic)
+              {t.signInBasic}
             </button>
-            {err && <p className="text-xs text-red-600">{err}</p>}
           </form>
         </details>
       </div>
@@ -170,38 +192,49 @@ function Login({
 }
 
 function Panel({ cred, onSignout }: { cred: Credential; onSignout: () => void }) {
+  const { t } = useI18n();
   const me = useQuery({ queryKey: ["me", cred], queryFn: api.me });
   const [tab, setTab] = useState<"hosts" | "tokens" | "activity" | "status">("hosts");
 
-  if (me.isPending) return <Shell>Loading…</Shell>;
+  if (me.isPending) return <Shell>{t.loading}</Shell>;
   if (me.isError)
     return (
       <Shell>
         <div className="mx-auto mt-24 text-center space-y-4">
-          <p className="text-red-600">API error: {String(me.error.message)}</p>
+          <p className="text-red-600">
+            {t.apiError}: {String(me.error.message)}
+          </p>
           <button className="underline" onClick={onSignout}>
-            Sign out
+            {t.signOut}
           </button>
         </div>
       </Shell>
     );
 
+  const tabLabels: Record<"hosts" | "tokens" | "activity" | "status", string> = {
+    hosts: t.tabHosts,
+    tokens: t.tabTokens,
+    activity: t.tabActivity,
+    status: t.tabStatus,
+  };
+
   return (
     <Shell>
       <header className="flex items-center justify-between mb-2">
         <h1 className="text-2xl font-semibold">Dyatel</h1>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-3 text-sm">
+          <LangToggle />
           <span>
             {me.data.name}
             <span className="ml-1.5 opacity-50">{cred.auth}</span>
             {me.data.is_admin && (
               <span className="ml-1.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 px-1.5 py-0.5 text-xs">
-                admin
+                {t.admin}
               </span>
             )}
           </span>
           <button className="underline opacity-70 hover:opacity-100" onClick={onSignout}>
-            Sign out
+            {t.signOut}
           </button>
         </div>
       </header>
@@ -209,18 +242,18 @@ function Panel({ cred, onSignout }: { cred: Credential; onSignout: () => void })
         {(["hosts", "tokens", "activity", "status"] as const)
           // status is the admin drift report: no point showing a 403 tab to
           // the users who cannot read it.
-          .filter((t) => t !== "status" || me.data.is_admin)
-          .map((t) => (
+          .filter((k) => k !== "status" || me.data.is_admin)
+          .map((k) => (
             <button
-              key={t}
+              key={k}
               className={`px-3 py-2 -mb-px border-b-2 ${
-                tab === t
+                tab === k
                   ? "border-zinc-900 dark:border-zinc-100 font-medium"
                   : "border-transparent opacity-60 hover:opacity-100"
               }`}
-              onClick={() => setTab(t)}
+              onClick={() => setTab(k)}
             >
-              {t}
+              {tabLabels[k]}
             </button>
           ))}
       </nav>
