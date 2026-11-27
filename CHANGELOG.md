@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dyatelctl status` table (transport, handshake age, rx/tx per peer).
 
 ### Fixed
+- **Identity header no longer trusted by default** (`X-Dyatel-Sub`): any client
+  that could reach the API was able to assert an arbitrary identity, including
+  a name from the Authentik admin group, and be provisioned as an admin. The
+  path now requires `DYATEL_TRUST_SUB_HEADER=true`, and the panel vhost always
+  forwards the header empty.
 - **DNS conflicts are 409**: binding a hostname already bound to another
   forward no longer leaks a Postgres unique-violation as `400`.
 - **Status surfaces loop errors**: `_error` and `_dns` are included in

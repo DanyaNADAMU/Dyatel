@@ -95,6 +95,15 @@ trust — they police it.
 Token format: `dyatel_<32 bytes base64url>`; only the hash is stored.
 CLI sends `Authorization: Bearer dyatel_…`.
 
+**Trusted identity header** (`X-Dyatel-Sub`): an optional path for a
+fronting proxy that authenticates users itself (nginx `auth_request`,
+`oauth2-proxy`). It is **disabled unless `DYATEL_TRUST_SUB_HEADER=true`**,
+because the header is plain text and attacker-controlled: honouring it by
+default lets anyone who can reach the API sign in as anyone, including a
+name from the Authentik admin group. A proxy that enables it must also
+strip the header from inbound requests; the shipped panel vhost always
+sends it empty.
+
 ### 3.3 hosts
 
 | column | type | notes |

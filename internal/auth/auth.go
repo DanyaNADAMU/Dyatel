@@ -135,8 +135,10 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 			AuthMethod: "pat", IsAdmin: admin}, nil
 	}
 
-	// 4. Trusted-sub header (nginx auth_request / oauth2-proxy style).
-	if sub := r.Header.Get(SubclaimHeader); sub != "" {
+	// 4. Trusted-sub header (nginx auth_request / oauth2-proxy style). Off by
+	// default: the header is attacker-controlled unless the fronting proxy
+	// strips it from inbound requests and injects its own value.
+	if sub := r.Header.Get(SubclaimHeader); sub != "" && a.cfg.TrustSubHeader {
 		u, err := a.users.CreateUser(r.Context(), sub, sub) // lazy provision
 		if err != nil {
 			return anon, err
