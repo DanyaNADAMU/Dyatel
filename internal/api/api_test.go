@@ -114,13 +114,38 @@ func TestTrustedSubDoesNotOverwriteDisplayName(t *testing.T) {
 	s := testServer(t)
 	sub := fmt.Sprintf("trusted-sub-%d", time.Now().UnixNano())
 
-	if _, err := s.st.CreateUser(context.Background(), sub, "Danya"); err != nil {
-		t.Fatalf("create named user: %v", err)
+	// 1. Lazy creation via trusted-sub sets sub as initial fallback display_name.
+	rec := do(t, s, "GET", "/api/v1/me", sub, "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("lazy provision via /me: got %d: %s", rec.Code, rec.Body)
 	}
-	if got, err := s.st.CreateUser(context.Background(), sub, sub); err != nil {
-		t.Fatalf("sync fallback identity: %v", err)
+	var me struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil {
+		t.Fatal(err)
+	}
+	if me.Name != sub {
+		t.Fatalf("initial display name: got %q, want %q", me.Name, sub)
+	}
+
+	// 2. Real OIDC name overwrites the bare sub fallback.
+	if got, err := s.st.CreateUser(context.Background(), sub, "Danya"); err != nil {
+		t.Fatalf("update with real name: %v", err)
 	} else if got.DisplayName != "Danya" {
-		t.Fatalf("bare sub overwrote display name: got %q, want %q", got.DisplayName, "Danya")
+		t.Fatalf("real name did not replace sub fallback: got %q, want %q", got.DisplayName, "Danya")
+	}
+
+	// 3. Subsequent trusted-sub auth keeps the real display_name.
+	rec = do(t, s, "GET", "/api/v1/me", sub, "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("re-sync via /me: got %d: %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil {
+		t.Fatal(err)
+	}
+	if me.Name != "Danya" {
+		t.Fatalf("bare sub overwrote display name: got %q, want %q", me.Name, "Danya")
 	}
 }
 

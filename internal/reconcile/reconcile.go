@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"nadamu/dyatel/internal/config"
 	"nadamu/dyatel/internal/store"
 	"nadamu/dyatel/internal/transport/wireguard"
@@ -20,9 +21,15 @@ import (
 
 type cmdRunner func(ctx context.Context, name string, args ...string) (string, error)
 
+type reconcileStore interface {
+	HostsByNode(ctx context.Context, node string) ([]store.Host, error)
+	ForwardsByHost(ctx context.Context, hostID uuid.UUID) ([]store.Forward, error)
+}
+
 type Reconciler struct {
 	cfg    *config.Config
 	st     *store.Store
+	db     reconcileStore
 	wg     *wireguard.WG
 	xr     *xrayvless.Xray
 	exec   cmdRunner
@@ -52,7 +59,11 @@ type Endpoint struct {
 }
 
 func New(cfg *config.Config, st *store.Store) *Reconciler {
-	return &Reconciler{cfg: cfg, st: st, wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
+	var db reconcileStore
+	if st != nil {
+		db = st
+	}
+	return &Reconciler{cfg: cfg, st: st, db: db, wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
 		exec: run, kick: make(chan struct{}, 1), last: map[string]HostStatus{}}
 }
 
@@ -144,6 +155,9 @@ func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport s
 // removes or reprograms anything — that authority belongs to a live control
 // plane — it only restores service.
 func (r *Reconciler) ensureFromDisk(ctx context.Context) {
+	if r.cfg.WGConfigPath == "" {
+		return
+	}
 	dir := filepath.Dir(r.cfg.WGConfigPath)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -203,9 +217,10 @@ func (r *Reconciler) Run(ctx context.Context) {
 // pass renders desired state for all hosts and applies it (no-bounce).
 func (r *Reconciler) pass(ctx context.Context) {
 	// Only this node's hosts: other daemons own theirs (DYATEL_NODE).
-	hosts, err := r.st.HostsByNode(ctx, r.cfg.Node)
+	hosts, err := r.db.HostsByNode(ctx, r.cfg.Node)
 	if err != nil {
 		r.lastErr(fmt.Errorf("load hosts: %w", err))
+		r.ensureFromDisk(ctx)
 		return
 	}
 	seen := map[string]bool{}      // live ifaces
@@ -297,7 +312,7 @@ func (r *Reconciler) pass(ctx context.Context) {
 			st.Endpoints["consumer"] = Endpoint{PublicKey: *h.ConsumerWGPublicKey}
 		}
 		// UFW + NAT for forwards
-		fwds, err := r.st.ForwardsByHost(ctx, h.ID)
+		fwds, err := r.db.ForwardsByHost(ctx, h.ID)
 		if err == nil {
 			r.applyForwards(ctx, ifname, h, fwds)
 		}
@@ -377,7 +392,7 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 			if len(fields) < 2 || !strings.HasPrefix(fields[1], typ.prefix) {
 				continue
 			}
-			iface := strings.TrimSuffix(fields[1], ":")
+			iface, _, _ := strings.Cut(strings.TrimSuffix(fields[1], ":"), "@")
 			if !seen[iface] {
 				if typ.userspace {
 					r.stopAWGUnit(ctx, iface)
@@ -486,6 +501,9 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, 
 	// tun. Supervision comes from the reconcile pass instead: if the daemon
 	// dies, its tun disappears and the next pass re-runs this unit.
 	if out, err := r.cmd(ctx, "systemctl", "is-active", awgUnitName(ifname)); err != nil || strings.TrimSpace(out) != "active" {
+		// Clear any previously failed transient unit with the same name so
+		// systemd-run can recreate it cleanly.
+		_, _ = r.cmd(ctx, "systemctl", "reset-failed", awgUnitName(ifname))
 		if _, err := r.cmd(ctx, "systemd-run", "--unit", awgUnitName(ifname),
 			"--property", "Type=forking",
 			"/usr/local/bin/amneziawg-go", ifname); err != nil {
@@ -511,7 +529,9 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, 
 
 // stopAWGUnit stops the transient userspace unit if it is running this iface.
 func (r *Reconciler) stopAWGUnit(ctx context.Context, ifname string) {
-	_, _ = r.cmd(ctx, "systemctl", "stop", awgUnitName(ifname))
+	unit := awgUnitName(ifname)
+	_, _ = r.cmd(ctx, "systemctl", "stop", unit)
+	_, _ = r.cmd(ctx, "systemctl", "reset-failed", unit)
 }
 
 func awgUnitName(ifname string) string { return "dyatel-awg-" + ifname }

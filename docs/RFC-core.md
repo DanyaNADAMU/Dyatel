@@ -393,11 +393,17 @@ every 30s (and on POST /reconcile):
   record run in runs table {at, drift: bool, detail}
 ```
 
-- **wg**: core owns `/etc/wireguard/wg-dyatel.conf` and applies with
-  `wg syncconf wg-dyatel <(wg-quick strip wg-dyatel)` — no interface
-  bounce, no dropped handshakes. Key files `chmod 600`, owned root.
-  Each host listens on its **own** `listen_port` (§3.4a) — per-host
-  ports, no shared 51820.
+- **wg / awg**: core renders per-host interface configs
+  `/etc/wireguard/wgd-<name>.conf` (WireGuard) and `awd-<name>.conf`
+  (AmneziaWG), applying live changes with `syncconf ... <(wg-quick strip ...)`
+  — no interface bounce, no dropped handshakes. Key files `chmod 600`,
+  owned root. When the `amneziawg` kernel module is absent, `awd-*` falls
+  back to userspace `amneziawg-go` supervised by a transient systemd unit
+  `dyatel-awg-<iface>`. Each host listens on its **own** `listen_port`
+  (§3.4a) — per-host ports, no shared 51820. Orphan interfaces (including
+  userspace `tun` interfaces and their `dyatel-awg-*` units), stale
+  rendered `.conf` files, IPv4/IPv6 `DYATEL-*` NAT chains + hook jumps,
+  and UFW rules of deleted or suspended hosts are pruned each pass.
 - **UFW ports**: each host's `listen_port` and each forward's
   `public_port` get `ufw allow proto {tcp,udp} to any port {port}`
   with comment `Dyatel host={name}` — reconcile deletes rules whose
@@ -446,10 +452,10 @@ every 30s (and on POST /reconcile):
 - **Dry-run**: `dyatelctl status` calls `GET /status` which runs the
   diff but applies nothing.
 
-Loop tick ordering: wg → ufw → dns. A suspended host stays in wg
-conf with `PersistentKeepalive` intact but its forwards' UFW routes
-are removed and DNS records deleted (visible but dead is worse than
-absent).
+Loop tick ordering: wg/awg + ufw/nat → xray → prune orphans. A suspended
+host has its interface (and any userspace `dyatel-awg-*` unit), rendered
+config, NAT chains, and UFW rules torn down so degraded mode never
+resurrects it and visible-but-dead forwards are impossible.
 
 ## 7. Security notes
 

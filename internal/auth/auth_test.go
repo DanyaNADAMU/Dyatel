@@ -126,22 +126,50 @@ func TestIdentityVisibilityAndRole(t *testing.T) {
 }
 
 func TestTrustedSubKeepsExistingDisplayName(t *testing.T) {
-	users := &fakeUserSync{users: map[string]*store.User{
-		"authentik-sub-123": {
-			ID:           uuid.New(),
-			AuthentikSub: "authentik-sub-123",
-			DisplayName:  "Danya",
-			IsAdmin:      true,
-		},
-	}}
-	a := New(&config.Config{}, nil)
+	users := &fakeUserSync{}
+	var oidcName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sub":    "authentik-sub-123",
+			"name":   oidcName,
+			"groups": []string{"authentik Admins"},
+		})
+	}))
+	defer srv.Close()
+
+	a := New(&config.Config{
+		OIDCIntrospectionURL: srv.URL + "/application/o/userinfo/",
+		AuthentikAdminGroup:  "authentik Admins",
+	}, nil)
 	a.users = users
 
+	// 1. Lazy creation via trusted-sub sets sub as fallback display_name.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	req.Header.Set(SubclaimHeader, "authentik-sub-123")
 	id, err := a.Authenticate(req)
 	if err != nil {
-		t.Fatalf("trusted-sub auth failed: %v", err)
+		t.Fatalf("initial trusted-sub auth failed: %v", err)
+	}
+	if id.User.DisplayName != "authentik-sub-123" {
+		t.Fatalf("initial display name = %q, want sub fallback", id.User.DisplayName)
+	}
+
+	// 2. OIDC login with real name updates display_name and admin flag.
+	oidcName = "Danya"
+	oidcReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	oidcReq.Header.Set("Authorization", "Bearer good-token")
+	id, err = a.Authenticate(oidcReq)
+	if err != nil {
+		t.Fatalf("oidc auth failed: %v", err)
+	}
+	if id.User.DisplayName != "Danya" || !id.IsAdmin {
+		t.Fatalf("expected OIDC update to Danya (admin), got %+v (%+v)", id, id.User)
+	}
+
+	// 3. Subsequent trusted-sub re-sync preserves Danya and existing IsAdmin.
+	id, err = a.Authenticate(req)
+	if err != nil {
+		t.Fatalf("trusted-sub re-sync failed: %v", err)
 	}
 	if id.User.DisplayName != "Danya" {
 		t.Fatalf("trusted-sub auth overwrote display name: got %q, want %q", id.User.DisplayName, "Danya")

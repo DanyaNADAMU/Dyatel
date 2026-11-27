@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"nadamu/dyatel/internal/config"
 	"nadamu/dyatel/internal/store"
 )
@@ -157,8 +158,10 @@ func TestPruneOrphans(t *testing.T) {
 		}
 	}
 	var calls []string
+	deletedJumps := map[string]int{}
 	r := newTestReconciler(testCfg(dir), func(_ context.Context, name string, args ...string) (string, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
+		line := name + " " + strings.Join(args, " ")
+		calls = append(calls, line)
 		if name == "ip" && len(args) >= 5 && args[3] == "type" && args[4] == "wireguard" {
 			return "4: wgd-keep: <POINTOPOINT>\n5: wgd-stale: <POINTOPOINT>", nil
 		}
@@ -171,7 +174,17 @@ func TestPruneOrphans(t *testing.T) {
 		if name == "ip6tables" && len(args) == 3 && args[2] == "-S" {
 			return "-N DYATEL-wgd-keep6\n-N DYATEL-awd-keep-po6\n-N DYATEL-wgd-stale6\n-N DYATEL-wgd-stale-po6\n-N DYATEL-awd-stale6\n-N DYATEL-awd-stale-po6", nil
 		}
-		if (name == "iptables" || name == "ip6tables") && len(args) >= 3 && args[2] == "-D" {
+		if (name == "iptables" || name == "ip6tables") && len(args) >= 6 && args[2] == "-D" {
+			// Simulate one existing jump on PREROUTING for base chains and on POSTROUTING for -po chains.
+			hook, chain := args[3], args[5]
+			isPo := strings.HasSuffix(chain, "-po") || strings.HasSuffix(chain, "-po6")
+			if (isPo && hook == "POSTROUTING") || (!isPo && hook == "PREROUTING") {
+				key := name + ":" + hook + ":" + chain
+				if deletedJumps[key] == 0 {
+					deletedJumps[key]++
+					return "", nil
+				}
+			}
 			return "", errors.New("no jump")
 		}
 		if name == "/usr/sbin/ufw" && len(args) == 1 && args[0] == "status" {
@@ -189,12 +202,25 @@ func TestPruneOrphans(t *testing.T) {
 	for _, want := range []string{
 		"ip link delete wgd-stale",
 		"systemctl stop dyatel-awg-awd-stale",
+		"systemctl reset-failed dyatel-awg-awd-stale",
 		"ip link delete awd-stale",
+		"iptables -t nat -D PREROUTING -j DYATEL-wgd-stale",
+		"iptables -t nat -D POSTROUTING -j DYATEL-wgd-stale-po",
+		"iptables -t nat -F DYATEL-wgd-stale",
 		"iptables -t nat -X DYATEL-wgd-stale",
+		"iptables -t nat -F DYATEL-wgd-stale-po",
 		"iptables -t nat -X DYATEL-wgd-stale-po",
+		"ip6tables -t nat -D PREROUTING -j DYATEL-wgd-stale6",
+		"ip6tables -t nat -D POSTROUTING -j DYATEL-wgd-stale-po6",
+		"ip6tables -t nat -D PREROUTING -j DYATEL-awd-stale6",
+		"ip6tables -t nat -D POSTROUTING -j DYATEL-awd-stale-po6",
+		"ip6tables -t nat -F DYATEL-wgd-stale6",
 		"ip6tables -t nat -X DYATEL-wgd-stale6",
+		"ip6tables -t nat -F DYATEL-wgd-stale-po6",
 		"ip6tables -t nat -X DYATEL-wgd-stale-po6",
+		"ip6tables -t nat -F DYATEL-awd-stale6",
 		"ip6tables -t nat -X DYATEL-awd-stale6",
+		"ip6tables -t nat -F DYATEL-awd-stale-po6",
 		"ip6tables -t nat -X DYATEL-awd-stale-po6",
 		"/usr/sbin/ufw --force delete allow 25566/tcp",
 	} {
@@ -207,7 +233,10 @@ func TestPruneOrphans(t *testing.T) {
 		"ip link delete awd-keep",
 		"ip link delete tun0",
 		"systemctl stop dyatel-awg-awd-keep",
+		"iptables -t nat -D PREROUTING -j DYATEL-wgd-keep",
 		"iptables -t nat -X DYATEL-wgd-keep",
+		"ip6tables -t nat -D PREROUTING -j DYATEL-wgd-keep6",
+		"ip6tables -t nat -D POSTROUTING -j DYATEL-awd-keep-po6",
 		"ip6tables -t nat -X DYATEL-wgd-keep6",
 		"ip6tables -t nat -X DYATEL-awd-keep-po6",
 		"/usr/sbin/ufw --force delete allow 25565/tcp",
@@ -256,5 +285,137 @@ func TestEnsureFromDiskRestoresOnlyDownDaemonInterfaces(t *testing.T) {
 	}
 	if strings.Contains(joined, "wgd-up.conf") || strings.Contains(joined, "unrelated.conf") {
 		t.Fatalf("unexpected bring-up for live/unrelated config:\n%s", joined)
+	}
+}
+
+type fakeReconcileStore struct {
+	hosts []store.Host
+	fwds  map[uuid.UUID][]store.Forward
+	err   error
+}
+
+func (f *fakeReconcileStore) HostsByNode(_ context.Context, _ string) ([]store.Host, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.hosts, nil
+}
+
+func (f *fakeReconcileStore) ForwardsByHost(_ context.Context, id uuid.UUID) ([]store.Forward, error) {
+	return f.fwds[id], nil
+}
+
+func TestPassPrunesStaleConfigsBeforeDegradedMode(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"wgd-deleted.conf", "awd-deleted.conf", "awd-susp.conf"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("[Interface]\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := testCfg(dir)
+	cfg.XrayConfigPath = filepath.Join(dir, "xray.json")
+	cfg.XrayServiceName = "xray@dyatel"
+
+	db := &fakeReconcileStore{
+		hosts: []store.Host{
+			{
+				ID:           uuid.New(),
+				Name:         "livewg",
+				Transport:    "wireguard",
+				ListenPort:   51820,
+				GWPrivateKey: "gwpriv",
+				TunnelIPv4:   "10.66.66.2/32",
+				TunnelIPv6:   "fd66:66::2/128",
+				State:        "active",
+			},
+			{
+				ID:           uuid.New(),
+				Name:         "liveawg",
+				Transport:    "amneziawg",
+				ListenPort:   51900,
+				GWPrivateKey: "gwpriv",
+				TunnelIPv4:   "10.77.77.2/32",
+				TunnelIPv6:   "fd77:77::2/128",
+				State:        "active",
+			},
+			{
+				ID:         uuid.New(),
+				Name:       "susp",
+				Transport:  "amneziawg",
+				ListenPort: 51901,
+				State:      "suspended",
+			},
+		},
+	}
+
+	var calls []string
+	down := map[string]bool{}
+	r := newTestReconciler(cfg, func(_ context.Context, name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if name == "awg" && len(args) == 2 && args[0] == "show" && args[1] == "awd-susp" {
+			return "interface: awd-susp", nil
+		}
+		if name == "ip" && len(args) >= 5 && args[0] == "link" && args[1] == "add" && args[4] == "amneziawg" {
+			return "", errors.New("RTNETLINK answers: Operation not supported")
+		}
+		if name == "systemd-run" && len(args) >= 3 && args[1] == "--unit" {
+			ifname := strings.TrimPrefix(args[2], "dyatel-awg-")
+			delete(down, ifname)
+		}
+		if name == "ip" && len(args) == 3 && args[0] == "link" && args[1] == "show" {
+			if down[args[2]] {
+				return "", errors.New("not found")
+			}
+			return "up", nil
+		}
+		if name == "ip" && len(args) >= 5 && args[3] == "type" && args[4] == "tun" {
+			return "9: awd-liveawg: <POINTOPOINT>\n10: awd-susp: <POINTOPOINT>", nil
+		}
+		if (name == "iptables" || name == "ip6tables") && len(args) >= 3 && (args[2] == "-C" || args[2] == "-D") {
+			return "", errors.New("no jump")
+		}
+		return "", nil
+	})
+	r.db = db
+
+	// Pass 1 (DB healthy): keeps active configs, tears down suspended AWG unit+iface, deletes stale configs.
+	r.pass(context.Background())
+
+	for _, kept := range []string{"wgd-livewg.conf", "awd-liveawg.conf"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Fatalf("expected active config %s to be preserved, got %v", kept, err)
+		}
+	}
+	for _, gone := range []string{"wgd-deleted.conf", "awd-deleted.conf", "awd-susp.conf"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected stale/suspended config %s to be deleted", gone)
+		}
+	}
+	if !slices.Contains(calls, "systemctl stop dyatel-awg-awd-susp") {
+		t.Fatalf("expected suspended AWG userspace unit to stop, calls:\n%s", strings.Join(calls, "\n"))
+	}
+
+	// Pass 2 (DB outage + reboot): degraded mode brings up active interfaces only; deleted/suspended stay dead.
+	calls = nil
+	down["wgd-livewg"] = true
+	down["awd-liveawg"] = true
+	down["wgd-deleted"] = true
+	down["awd-deleted"] = true
+	down["awd-susp"] = true
+	db.err = errors.New("connection refused")
+
+	r.pass(context.Background())
+
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, "ip link add wgd-livewg type wireguard") {
+		t.Fatalf("expected degraded mode to restore wgd-livewg, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "systemd-run --unit dyatel-awg-awd-liveawg") {
+		t.Fatalf("expected degraded mode to restore awd-liveawg, got:\n%s", joined)
+	}
+	for _, dead := range []string{"wgd-deleted", "awd-deleted", "awd-susp"} {
+		if strings.Contains(joined, dead) {
+			t.Fatalf("degraded mode resurrected deleted/suspended host %s:\n%s", dead, joined)
+		}
 	}
 }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.3.5] - 2026-11-27
+
+### Fixed
+- **Orphan AWG userspace and config cleanup**: `pruneOrphans` now tears down
+  orphan userspace `amneziawg-go` `tun` interfaces (`awd-*`), stops and resets
+  their transient `dyatel-awg-*` systemd units, and removes stale rendered
+  `wgd-*`/`awd-*` `.conf` files for deleted or suspended hosts while keeping
+  active hosts' configs intact.
+- **IPv6 NAT chain pruning**: `pruneOrphans` now cleans up orphan `ip6tables`
+  `DYATEL-*6` and `DYATEL-*-po6` NAT chains and removes their `PREROUTING` /
+  `POSTROUTING` jumps alongside IPv4 `iptables` chains.
+- **Degraded-mode loop wiring**: `Reconciler.pass` now invokes
+  `ensureFromDisk` when the control-plane database is unreachable so active
+  rendered configs are restored on reboot while deleted/suspended configs stay
+  absent.
+- **Trusted-sub display name preservation**: `Store.CreateUser` no longer
+  overwrites an existing human `display_name` when `X-Dyatel-Sub` (or an OIDC
+  claim without `name`/`preferred_username`) supplies `authentik_sub` as a
+  fallback name, while still upgrading a bare `sub` fallback once a real name
+  arrives.
+
 ## [v2.3.4] - 2026-11-27
 
 ### Added
