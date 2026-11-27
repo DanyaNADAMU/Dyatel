@@ -1,0 +1,13 @@
+# Local gitleaks tuning: lockfiles, OpenTimestamps proofs, and the fixed
+# dummy wireguard test key string carry hex/base64-looking text by design.
+title = "Dyatel gitleaks allowlist"
+
+[allowlist]
+description = "Allowlist lockfiles, OpenTimestamps proofs, and dummy test key literal"
+paths = [
+  '''web/package-lock\.json''',
+  '''\.opentimestamps/.*''',
+]
+regexes = [
+  '''GAMyPr1vateKeyNeverSeen''',
+]

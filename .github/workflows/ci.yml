@@ -71,7 +71,9 @@ jobs:
       - name: Test (unit + Postgres integration)
         env:
           DYATEL_TEST_DSN: postgres://dyatel:dyatel_test_password@127.0.0.1:5432/dyatel_test?sslmode=disable
-        run: go test -race -count=1 ./...
+        # Run packages sequentially (-p 1) because internal/api and
+        # internal/client integration suites share DYATEL_TEST_DSN.
+        run: go test -race -p 1 -count=1 ./...
 
   web-build:
     runs-on: ubuntu-24.04
@@ -109,13 +111,18 @@ jobs:
           enable-cache: true
 
       - name: Install Ansible collections and ansible-lint
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/ansible-collections
         run: |
           set -euo pipefail
           uv tool install --with ansible-core ansible-lint
           export PATH="$HOME/.local/bin:$PATH"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          mkdir -p "$ANSIBLE_COLLECTIONS_PATH"
+          ansible-galaxy collection install -r ansible/requirements.yml -p "$ANSIBLE_COLLECTIONS_PATH"
 
       - name: Run ansible-lint (production profile)
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/ansible-collections
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
