@@ -393,3 +393,35 @@ func (c *Client) DeleteForward(hostID, forwardID string) error {
 	_, err := c.Do(http.MethodDelete, "/hosts/"+hostID+"/forwards/"+forwardID, nil)
 	return err
 }
+
+// DNSRecord is an optional hostname bound to one forward.
+type DNSRecord struct {
+	ID           string `json:"id"`
+	ForwardID    string `json:"forward_id"`
+	Name         string `json:"name"`
+	CloudflareID string `json:"cloudflare_id,omitempty"`
+	CreatedAt    string `json:"created_at"`
+}
+
+func (c *Client) ListHostDNS(hostID string) ([]DNSRecord, error) {
+	raw, err := c.Do(http.MethodGet, "/hosts/"+hostID+"/dns", nil)
+	if err != nil {
+		return nil, err
+	}
+	ds := []DNSRecord{}
+	return ds, json.Unmarshal(raw, &ds)
+}
+
+func (c *Client) SetForwardDNS(forwardID, name string) (DNSRecord, error) {
+	raw, err := c.Do(http.MethodPost, "/forwards/"+forwardID+"/dns", map[string]string{"name": name})
+	if err != nil {
+		return DNSRecord{}, err
+	}
+	var d DNSRecord
+	return d, json.Unmarshal(raw, &d)
+}
+
+func (c *Client) DeleteForwardDNS(forwardID string) error {
+	_, err := c.Do(http.MethodDelete, "/forwards/"+forwardID+"/dns", nil)
+	return err
+}

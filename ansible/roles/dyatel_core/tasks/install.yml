@@ -291,6 +291,8 @@
     owner: root
     group: "{{ dyatel_core_group }}"
     mode: "0640"
+  # The file carries the Cloudflare token and the fallback admin hash.
+  no_log: true
   notify: Restart dyatel-core
   tags: [config]
 

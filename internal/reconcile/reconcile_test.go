@@ -2,7 +2,10 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"nadamu/dyatel/internal/config"
+	"nadamu/dyatel/internal/dns"
 	"nadamu/dyatel/internal/store"
 )
 
@@ -58,14 +62,16 @@ func TestParseDump(t *testing.T) {
 		"consumer": {PublicKey: "pk2"},
 	}
 	dump := "gwpriv\tgwpub\t51820\toff\n" +
-		"pk1\tpsk\t1.2.3.4:5555\t1700000000\t120\t340\n" +
-		"pk2\tpsk\t(none)\t0\t0\t0\n"
+		"pk1\tpsk\t1.2.3.4:5555\t10.66.66.2/32,fd66:66::2/128\t1700000000\t120\t340\t25\n" +
+		"pk2\tpsk\t(none)\t10.66.66.3/32,fd66:66::3/128\t0\t0\t0\toff\n"
 	parseDump(dump, eps)
 
-	if eps["proxer"].Endpoint != "1.2.3.4:5555" || eps["proxer"].TransferRx != 120 || eps["proxer"].TransferTx != 340 {
+	if eps["proxer"].Endpoint != "1.2.3.4:5555" || eps["proxer"].LastHandshake != "1700000000" ||
+		eps["proxer"].TransferRx != 120 || eps["proxer"].TransferTx != 340 {
 		t.Fatalf("unexpected proxer endpoint: %+v", eps["proxer"])
 	}
-	if eps["consumer"].LastHandshake != "0" {
+	if eps["consumer"].Endpoint != "(none)" || eps["consumer"].LastHandshake != "0" ||
+		eps["consumer"].TransferRx != 0 || eps["consumer"].TransferTx != 0 {
 		t.Fatalf("unexpected consumer handshake: %+v", eps["consumer"])
 	}
 }
@@ -417,5 +423,112 @@ func TestPassPrunesStaleConfigsBeforeDegradedMode(t *testing.T) {
 		if strings.Contains(joined, dead) {
 			t.Fatalf("degraded mode resurrected deleted/suspended host %s:\n%s", dead, joined)
 		}
+	}
+}
+
+type fakeDNSStore struct {
+	recs []store.DNSRecord
+	ids  map[uuid.UUID]string
+}
+
+func (f *fakeDNSStore) ActiveDNSRecordsByNode(_ context.Context, _ string) ([]store.DNSRecord, error) {
+	return f.recs, nil
+}
+
+func (f *fakeDNSStore) SetDNSCloudflareID(_ context.Context, id uuid.UUID, cfID string) error {
+	if f.ids == nil {
+		f.ids = map[uuid.UUID]string{}
+	}
+	f.ids[id] = cfID
+	return nil
+}
+
+func TestReconcileDNS(t *testing.T) {
+	var created []string
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  []map[string]string{{"id": "z1", "name": "nada.mu"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z1/dns_records":
+			if r.URL.Query().Get("name") == "mc1.test.nada.mu" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": []map[string]any{
+					{"id": "cf-a", "type": "A", "name": "mc1.test.nada.mu", "content": "81.30.105.65", "comment": "dyatel node=test fwd=f1"},
+					{"id": "cf-old", "type": "A", "name": "stale.test.nada.mu", "content": "81.30.105.65", "comment": "dyatel node=test fwd=old"},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/zones/z1/dns_records":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			created = append(created, body["type"].(string)+":"+body["name"].(string)+"="+body["content"].(string))
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "cf-" + body["type"].(string)}})
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/zones/z1/dns_records/"):
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/zones/z1/dns_records/"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]string{}})
+		}
+	}))
+	defer srv.Close()
+
+	recID := uuid.New()
+	fwdID := uuid.New()
+	cfg := testCfg(t.TempDir())
+	cfg.Node = "test"
+	cfg.DNSZone = "test.nada.mu"
+	cfg.PublicIPv4 = "81.30.105.65"
+	cfg.PublicIPv6 = "2a13:d207:494:21::1"
+
+	r := New(cfg, nil)
+	r.dns = dns.New("tok").WithBaseURL(srv.URL)
+	r.dnsDB = &fakeDNSStore{
+		recs: []store.DNSRecord{{
+			ID:        recID,
+			ForwardID: fwdID,
+			Name:      "mc1.test.nada.mu",
+		}},
+	}
+
+	r.reconcileDNS(context.Background())
+
+	if len(created) != 2 {
+		t.Fatalf("expected A and AAAA creation, got %v", created)
+	}
+	if !slices.Contains(deleted, "cf-old") {
+		t.Fatalf("expected stale record cf-old deletion, got %v", deleted)
+	}
+	if got := r.dnsDB.(*fakeDNSStore).ids[recID]; got != "cf-A,cf-AAAA" {
+		t.Fatalf("saved cloudflare_id = %q, want cf-A,cf-AAAA", got)
+	}
+}
+
+func TestReconcileDNSRequiresExplicitPublicIP(t *testing.T) {
+	cfg := testCfg(t.TempDir())
+	cfg.Node = "test"
+	cfg.DNSZone = "test.nada.mu"
+	cfg.CloudflareToken = "tok"
+	cfg.PublicIPv4 = ""
+	cfg.PublicIPv6 = ""
+
+	r := New(cfg, nil)
+	r.dnsDB = &fakeDNSStore{recs: []store.DNSRecord{{
+		ID:        uuid.New(),
+		ForwardID: uuid.New(),
+		Name:      "mc1.test.nada.mu",
+	}}}
+
+	r.reconcileDNS(context.Background())
+	st := r.dnsStatus()
+	if st.LastSync == nil {
+		t.Fatal("expected a sync attempt to be recorded")
+	}
+	if !strings.Contains(st.LastError, "not configured") {
+		t.Fatalf("last_error = %q, want a missing-public-IP error", st.LastError)
 	}
 }

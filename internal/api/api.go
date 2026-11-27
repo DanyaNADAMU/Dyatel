@@ -59,12 +59,17 @@ func (s *Server) Router() http.Handler {
 				r.Post("/state", s.setState)
 				r.Get("/config/proxer", s.proxerConfig)
 				r.Get("/config/client", s.clientConfig)
+				r.Get("/dns", s.listHostDNS)
 				r.Route("/forwards", func(r chi.Router) {
 					r.Post("/", s.createForward)
 					r.Get("/", s.listForwards)
 					r.Delete("/{fid}", s.deleteForward)
 				})
 			})
+		})
+		r.Route("/forwards/{fid}", func(r chi.Router) {
+			r.Post("/dns", s.upsertForwardDNS)
+			r.Delete("/dns", s.deleteForwardDNS)
 		})
 	})
 	return r
@@ -653,6 +658,139 @@ func (s *Server) deleteForward(w http.ResponseWriter, r *http.Request) {
 	s.rc.Trigger()
 	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "forward.delete", "forward", fid.String(), []byte(`{}`))
 	w.WriteHeader(204)
+}
+
+func (s *Server) listHostDNS(w http.ResponseWriter, r *http.Request) {
+	h, ok := s.hostFromURL(w, r)
+	if !ok {
+		return
+	}
+	recs, err := s.st.DNSRecordsByHost(r.Context(), h.ID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, recs)
+}
+
+func (s *Server) upsertForwardDNS(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	f, h, ok := s.forwardFromURL(w, r)
+	if !ok {
+		return
+	}
+	if id.RoleOn(*h) != "owner" && !id.IsAdmin {
+		http.Error(w, "403", http.StatusForbidden)
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	fqdn, err := normalizeDNSName(in.Name, s.cfg.DNSZone)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	rec, err := s.st.UpsertDNSRecord(r.Context(), f.ID, fqdn)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			http.Error(w, "dns name already bound to another forward", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	s.rc.Trigger()
+	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "dns.upsert", "forward", f.ID.String(),
+		mustMarshal(map[string]string{"name": rec.Name}))
+	writeJSON(w, rec)
+}
+
+func (s *Server) deleteForwardDNS(w http.ResponseWriter, r *http.Request) {
+	id := auth.From(r.Context())
+	f, h, ok := s.forwardFromURL(w, r)
+	if !ok {
+		return
+	}
+	if id.RoleOn(*h) != "owner" && !id.IsAdmin {
+		http.Error(w, "403", http.StatusForbidden)
+		return
+	}
+	if err := s.st.DeleteDNSRecordByForward(r.Context(), f.ID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "404", 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.rc.Trigger()
+	_ = s.st.Event(r.Context(), id.User.ID, id.AuthMethod, "dns.delete", "forward", f.ID.String(), []byte(`{}`))
+	w.WriteHeader(204)
+}
+
+func (s *Server) forwardFromURL(w http.ResponseWriter, r *http.Request) (*store.Forward, *store.Host, bool) {
+	id := auth.From(r.Context())
+	fid, err := uuid.Parse(chi.URLParam(r, "fid"))
+	if err != nil {
+		http.Error(w, "bad fid", 400)
+		return nil, nil, false
+	}
+	f, err := s.st.ForwardByID(r.Context(), fid)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "404", 404)
+		return nil, nil, false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return nil, nil, false
+	}
+	h, err := s.st.Host(r.Context(), f.HostID)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "404", 404)
+		return nil, nil, false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return nil, nil, false
+	}
+	if !id.CanSeeHost(*h) {
+		http.Error(w, "403", http.StatusForbidden)
+		return nil, nil, false
+	}
+	return f, h, true
+}
+
+func normalizeDNSName(raw, zone string) (string, error) {
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	z := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if z == "" {
+		return "", errors.New("dns zone not configured")
+	}
+	if name == "" {
+		return "", errors.New("bad dns name")
+	}
+	if strings.HasSuffix(name, "."+z) {
+		name = strings.TrimSuffix(name, "."+z)
+	}
+	if name == "" || name == z {
+		return "", errors.New("bad dns name: subdomain label required")
+	}
+	for _, lbl := range strings.Split(name, ".") {
+		if len(lbl) == 0 || len(lbl) > 63 || lbl[0] == '-' || lbl[len(lbl)-1] == '-' {
+			return "", errors.New("bad dns label (a-z0-9-)")
+		}
+		for _, c := range lbl {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return "", errors.New("bad dns label (a-z0-9-)")
+			}
+		}
+	}
+	return name + "." + z, nil
 }
 
 // helpers

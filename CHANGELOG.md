@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cloudflare DNS sync**: `A`/`AAAA` records for forward hostnames are
+  converged from `dns_records` by the reconcile loop (`DYATEL_CLOUDFLARE_TOKEN`,
+  `DYATEL_DNS_ZONE`, explicit `DYATEL_PUBLIC_IPV4/_IPV6`). Mutations sync
+  immediately; a drift check runs every `DYATEL_DNS_SYNC_SEC` (300s), and
+  `_dns` in `/status` plus `dyatelctl status` report the last attempt.
+- **DNS ownership guard**: records are tagged with a `dyatel ` comment prefix;
+  foreign records are never overwritten, stale duplicates of one type are
+  collapsed, and pruning only touches this node's `A`/`AAAA` records.
+- **Bilingual panel**: the web UI auto-detects EN/RU from the browser, keeps
+  the choice in `localStorage`, and has a header toggle; hosts, status, tokens
+  and the audit feed are fully localized.
+- **Panel host management**: edit hosts in place (`PATCH`), register a
+  consumer BYOK public key, copy transport-specific onboarding commands for
+  WG/AWG, bind DNS names to forwards, and trigger a reconcile pass.
+- **CLI parity**: `dyatelctl forwards dns list|set|rm` and a human-readable
+  `dyatelctl status` table (transport, handshake age, rx/tx per peer).
+
+### Fixed
+- **DNS conflicts are 409**: binding a hostname already bound to another
+  forward no longer leaks a Postgres unique-violation as `400`.
+- **Status surfaces loop errors**: `_error` and `_dns` are included in
+  `/status`, so the panel and CLI show reconcile/DNS failures instead of
+  silently rendering an empty banner.
+- **Ansible**: the core environment file is deployed with `no_log`, so the
+  Cloudflare token never appears in play output or diffs.
+
 ## [v2.3.5] - 2026-11-27
 
 ### Fixed

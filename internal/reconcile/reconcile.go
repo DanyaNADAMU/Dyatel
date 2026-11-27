@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"nadamu/dyatel/internal/config"
+	"nadamu/dyatel/internal/dns"
 	"nadamu/dyatel/internal/store"
 	"nadamu/dyatel/internal/transport/wireguard"
 	"nadamu/dyatel/internal/transport/xrayvless"
@@ -26,10 +28,17 @@ type reconcileStore interface {
 	ForwardsByHost(ctx context.Context, hostID uuid.UUID) ([]store.Forward, error)
 }
 
+type dnsStore interface {
+	ActiveDNSRecordsByNode(ctx context.Context, node string) ([]store.DNSRecord, error)
+	SetDNSCloudflareID(ctx context.Context, id uuid.UUID, cfID string) error
+}
+
 type Reconciler struct {
 	cfg    *config.Config
 	st     *store.Store
 	db     reconcileStore
+	dnsDB  dnsStore
+	dns    *dns.Client
 	wg     *wireguard.WG
 	xr     *xrayvless.Xray
 	exec   cmdRunner
@@ -37,6 +46,20 @@ type Reconciler struct {
 	mu     sync.Mutex
 	last   map[string]HostStatus // ifname -> status
 	lastAt time.Time
+
+	// DNS sync is expensive (Cloudflare round-trips), so it runs on mutation
+	// (dnsKick) or on the drift interval (nextDNS), never on every 15s pass.
+	dnsKick atomic.Bool
+	dnsMu   sync.Mutex
+	dnsInfo DNSStatus
+	nextDNS time.Time
+}
+
+// DNSStatus is the operator-facing view of the last Cloudflare sync attempt.
+type DNSStatus struct {
+	Enabled   bool       `json:"enabled"`
+	LastSync  *time.Time `json:"last_sync,omitempty"`
+	LastError string     `json:"last_error,omitempty"`
 }
 
 type HostStatus struct {
@@ -60,10 +83,13 @@ type Endpoint struct {
 
 func New(cfg *config.Config, st *store.Store) *Reconciler {
 	var db reconcileStore
+	var ddb dnsStore
 	if st != nil {
 		db = st
+		ddb = st
 	}
-	return &Reconciler{cfg: cfg, st: st, db: db, wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
+	return &Reconciler{cfg: cfg, st: st, db: db, dnsDB: ddb, dns: dns.New(cfg.CloudflareToken),
+		wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
 		exec: run, kick: make(chan struct{}, 1), last: map[string]HostStatus{}}
 }
 
@@ -76,6 +102,9 @@ func (r *Reconciler) cmd(ctx context.Context, name string, args ...string) (stri
 
 // Trigger asks for an out-of-band reconcile pass (API mutation → loop picks it up).
 func (r *Reconciler) Trigger() {
+	// DNS state changed too: a binding/rename/removal must reach Cloudflare
+	// without waiting for the drift interval.
+	r.dnsKick.Store(true)
 	select {
 	case r.kick <- struct{}{}:
 	default:
@@ -320,9 +349,96 @@ func (r *Reconciler) pass(ctx context.Context) {
 	}
 	r.reconcileXray(ctx, xrayHosts)
 	r.pruneOrphans(ctx, seen, seenNames)
+	if r.dnsDue() {
+		r.reconcileDNS(ctx)
+	}
 	r.mu.Lock()
 	r.last, r.lastAt = statuses, time.Now()
 	r.mu.Unlock()
+}
+
+func (r *Reconciler) dnsDue() bool {
+	if r.dns == nil || !r.dns.Enabled() || r.dnsDB == nil || r.cfg.DNSZone == "" {
+		return false
+	}
+	if r.dnsKick.Swap(false) {
+		return true
+	}
+	return !time.Now().Before(r.nextDNS)
+}
+
+// reconcileDNS is the scheduled entry point; it always records the outcome so
+// /status can show whether Cloudflare is actually in sync.
+func (r *Reconciler) reconcileDNS(ctx context.Context) {
+	err := r.syncDNS(ctx)
+	now := time.Now().UTC()
+	r.dnsMu.Lock()
+	r.dnsInfo = DNSStatus{Enabled: true, LastSync: &now}
+	if err != nil {
+		r.dnsInfo.LastError = err.Error()
+	}
+	r.dnsMu.Unlock()
+	if err != nil {
+		// Retry soon, but not on every pass: a Cloudflare outage must not turn
+		// the 15s reconcile loop into a request flood.
+		r.nextDNS = time.Now().Add(time.Minute)
+		return
+	}
+	interval := time.Duration(r.cfg.DNSSyncSec) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	r.nextDNS = time.Now().Add(interval)
+}
+
+func (r *Reconciler) syncDNS(ctx context.Context) error {
+	recs, err := r.dnsDB.ActiveDNSRecordsByNode(ctx, r.cfg.Node)
+	if err != nil {
+		return fmt.Errorf("load dns records: %w", err)
+	}
+	// Explicit public IPs only: resolving the API endpoint host would publish
+	// another node's address (api.<domain> points at one specific machine).
+	ipv4 := strings.TrimSpace(r.cfg.PublicIPv4)
+	ipv6 := strings.TrimSpace(r.cfg.PublicIPv6)
+	want := make(map[string]bool, len(recs))
+	for _, rec := range recs {
+		want[strings.ToLower(rec.Name)] = true
+	}
+	prefix := fmt.Sprintf("dyatel node=%s ", r.cfg.Node)
+	if ipv4 == "" && ipv6 == "" {
+		if len(recs) > 0 {
+			return fmt.Errorf("dns: DYATEL_PUBLIC_IPV4/DYATEL_PUBLIC_IPV6 are not configured")
+		}
+		// Nothing desired but stale records may still exist (hosts deleted or
+		// suspended): pruning does not need an address.
+		if err := r.dns.PruneOrphans(ctx, r.cfg.DNSZone, prefix, want); err != nil {
+			return fmt.Errorf("dns prune: %w", err)
+		}
+		return nil
+	}
+	var firstErr error
+	for _, rec := range recs {
+		fqdn := strings.ToLower(rec.Name)
+		comment := fmt.Sprintf("dyatel node=%s fwd=%s", r.cfg.Node, rec.ForwardID)
+		cfID, err := r.dns.UpsertForwardRecord(ctx, r.cfg.DNSZone, fqdn, ipv4, ipv6, comment)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("dns upsert %s: %w", fqdn, err)
+			}
+			continue
+		}
+		if cfID != "" && (rec.CloudflareID == nil || *rec.CloudflareID != cfID) {
+			if err := r.dnsDB.SetDNSCloudflareID(ctx, rec.ID, cfID); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("save cloudflare id for %s: %w", fqdn, err)
+			}
+		}
+	}
+	if err := r.dns.PruneOrphans(ctx, r.cfg.DNSZone, prefix, want); err != nil {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("dns prune: %w", err)
+		}
+	}
+	return firstErr
 }
 
 // reconcileXray renders the aggregated berg-side xray config (all active
@@ -555,8 +671,20 @@ func (r *Reconciler) Status(ctx context.Context) map[string]any {
 		}
 		out[h.ID.String()] = st
 	}
+	if e, ok := r.last["_error"]; ok {
+		out["_error"] = e
+	}
 	out["_checked_at"] = r.lastAt
+	out["_dns"] = r.dnsStatus()
 	return out
+}
+
+func (r *Reconciler) dnsStatus() DNSStatus {
+	r.dnsMu.Lock()
+	defer r.dnsMu.Unlock()
+	st := r.dnsInfo
+	st.Enabled = r.dns != nil && r.dns.Enabled()
+	return st
 }
 
 // applyForwards allows the public port in UFW and installs NAT to the proxer tunnel IP.
@@ -721,10 +849,13 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 }
 
 // parseDump fills live endpoint info from `wg show <if> dump` (tab format).
+// Peer lines contain 8 tab-separated fields:
+// public-key, preshared-key, endpoint, allowed-ips, latest-handshake,
+// transfer-rx, transfer-tx, persistent-keepalive.
 func parseDump(dump string, eps map[string]Endpoint) {
 	for _, line := range strings.Split(dump, "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 {
+		if len(f) < 7 {
 			continue
 		}
 		for who, ep := range eps {
@@ -732,9 +863,9 @@ func parseDump(dump string, eps map[string]Endpoint) {
 				continue
 			}
 			ep.Endpoint = f[2]
-			ep.LastHandshake = f[3]
-			ep.TransferRx = atoi(f[4])
-			ep.TransferTx = atoi(f[5])
+			ep.LastHandshake = f[4]
+			ep.TransferRx = atoi(f[5])
+			ep.TransferTx = atoi(f[6])
 			eps[who] = ep
 		}
 	}
