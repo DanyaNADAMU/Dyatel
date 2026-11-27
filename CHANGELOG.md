@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.3.4] - 2026-11-27
+
 ### Added
 - **Environment-separated staging networks**: staging runs in
   `10.66.67.0/24` + `fd66:67::/64` (AWG `10.77.78.0/24` + `fd77:78::/64`).
