@@ -61,4 +61,4 @@ jobs:
           uv tool install --with ansible-core ansible-lint
           export PATH="$HOME/.local/bin:$PATH"
           mkdir -p "$HOME/.ansible/collections"
-          ansible-galaxy collection install -r ansible/requirements.yml -p "$HOME/.ansible/collections"
+          ansible-galaxy collection install --force -r ansible/requirements.yml -p "$HOME/.ansible/collections"
