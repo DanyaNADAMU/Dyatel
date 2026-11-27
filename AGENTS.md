@@ -2,7 +2,9 @@
 
 Dyatel is a tunnel/proxy control panel: a Go core daemon reconciling WireGuard /
 AmneziaWG / Xray tunnels from Postgres state, with CLI and web panel as thin
-consumers. Read `docs/RFC-core.md` for the full contract before touching the core.
+consumers. Read `docs/RFC-core.md` for the domain contract before touching the
+core, and update the affected sections of `docs/RFC-core.md` in the same PR
+when changing DB schema, `/api/v1`, addressing rules, or reconcile invariants.
 
 ## Non-Negotiables
 
@@ -49,8 +51,10 @@ The core never imports interface code; interfaces never bypass the API.
 
 ## Conventions
 
-- Go 1.23 toolchain at `~/Projects/.tools/go/bin/go`, caches under
-  `~/Projects/.cache/*` (set `GOCACHE`/`GOMODCACHE`/`GOPATH`/`GOSUMDB=off`).
+- Go toolchain matches `go.mod` (`go test -race ./...`, `go vet ./...`);
+  Postgres-backed integration tests in `internal/api` and `internal/client`
+  run when `DYATEL_TEST_DSN` is set.
+- Web panel (`web/`): strict TypeScript (`cd web && npm ci && npm run build`).
 - Commits: Conventional Commits, English, SSH-signed (`danya-git`),
   `git -c user.name=Danya -c user.email=git@nada.mu commit`.
 - Docs: bilingual `docs/en/` + `docs/ru/` for user-facing material; RFC and
