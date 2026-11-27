@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.4.0] - 2026-11-27
+
 ### Added
 - **Cloudflare DNS sync**: `A`/`AAAA` records for forward hostnames are
   converged from `dns_records` by the reconcile loop (`DYATEL_CLOUDFLARE_TOKEN`,
