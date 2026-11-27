@@ -21,7 +21,9 @@ dyatel_core_env_file: "{{ dyatel_core_config_dir }}/core.env"
 # Source: local Dyatel checkout on the control host (built and shipped,
 # utka-style); no release artifacts exist yet (RFC §9: core binary install
 # is Ansible's job).
-dyatel_core_local_src: "{{ playbook_dir }}/../.."
+# Anchor to the role, not the playbook: the same role is driven from this
+# repo's playbooks and from the Infra playbook, whose playbook_dir differs.
+dyatel_core_local_src: "{{ role_path }}/../../.."
 
 # Network (RFC §4a topology)
 dyatel_core_bind: "127.0.0.1:8100"
