@@ -137,7 +137,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 
 	// 4. Trusted-sub header (nginx auth_request / oauth2-proxy style).
 	if sub := r.Header.Get(SubclaimHeader); sub != "" {
-		u, err := a.st.CreateUser(r.Context(), sub, sub) // lazy provision
+		u, err := a.users.CreateUser(r.Context(), sub, sub) // lazy provision
 		if err != nil {
 			return anon, err
 		}

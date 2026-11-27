@@ -110,6 +110,20 @@ func TestFallbackAdminBasicAuth(t *testing.T) {
 	}
 }
 
+func TestTrustedSubDoesNotOverwriteDisplayName(t *testing.T) {
+	s := testServer(t)
+	sub := fmt.Sprintf("trusted-sub-%d", time.Now().UnixNano())
+
+	if _, err := s.st.CreateUser(context.Background(), sub, "Danya"); err != nil {
+		t.Fatalf("create named user: %v", err)
+	}
+	if got, err := s.st.CreateUser(context.Background(), sub, sub); err != nil {
+		t.Fatalf("sync fallback identity: %v", err)
+	} else if got.DisplayName != "Danya" {
+		t.Fatalf("bare sub overwrote display name: got %q, want %q", got.DisplayName, "Danya")
+	}
+}
+
 // TestStatusAdminOnly: status is admin-gated (403 for non-admins).
 func TestStatusAdminOnly(t *testing.T) {
 	s := testServer(t)

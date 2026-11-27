@@ -150,16 +150,28 @@ func TestApplyForwardsAndPruneUFW(t *testing.T) {
 }
 
 func TestPruneOrphans(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"wgd-keep.conf", "wgd-stale.conf", "awd-keep.conf", "awd-stale.conf", "unrelated.conf"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("[Interface]\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var calls []string
-	r := newTestReconciler(testCfg(t.TempDir()), func(_ context.Context, name string, args ...string) (string, error) {
+	r := newTestReconciler(testCfg(dir), func(_ context.Context, name string, args ...string) (string, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		if name == "ip" && len(args) >= 5 && args[3] == "type" && args[4] == "wireguard" {
 			return "4: wgd-keep: <POINTOPOINT>\n5: wgd-stale: <POINTOPOINT>", nil
 		}
+		if name == "ip" && len(args) >= 5 && args[3] == "type" && args[4] == "tun" {
+			return "6: awd-keep: <POINTOPOINT>\n7: awd-stale: <POINTOPOINT>\n8: tun0: <POINTOPOINT>", nil
+		}
 		if name == "iptables" && len(args) == 3 && args[2] == "-S" {
 			return "-N DYATEL-wgd-keep\n-N DYATEL-wgd-stale\n-N DYATEL-wgd-stale-po", nil
 		}
-		if name == "iptables" && len(args) >= 3 && args[2] == "-D" {
+		if name == "ip6tables" && len(args) == 3 && args[2] == "-S" {
+			return "-N DYATEL-wgd-keep6\n-N DYATEL-awd-keep-po6\n-N DYATEL-wgd-stale6\n-N DYATEL-wgd-stale-po6\n-N DYATEL-awd-stale6\n-N DYATEL-awd-stale-po6", nil
+		}
+		if (name == "iptables" || name == "ip6tables") && len(args) >= 3 && args[2] == "-D" {
 			return "", errors.New("no jump")
 		}
 		if name == "/usr/sbin/ufw" && len(args) == 1 && args[0] == "status" {
@@ -168,25 +180,50 @@ func TestPruneOrphans(t *testing.T) {
 		return "", nil
 	})
 
-	r.pruneOrphans(context.Background(), map[string]bool{"wgd-keep": true}, map[string]bool{"keep": true})
+	r.pruneOrphans(
+		context.Background(),
+		map[string]bool{"wgd-keep": true, "awd-keep": true},
+		map[string]bool{"keep": true},
+	)
 
 	for _, want := range []string{
 		"ip link delete wgd-stale",
+		"systemctl stop dyatel-awg-awd-stale",
+		"ip link delete awd-stale",
 		"iptables -t nat -X DYATEL-wgd-stale",
 		"iptables -t nat -X DYATEL-wgd-stale-po",
+		"ip6tables -t nat -X DYATEL-wgd-stale6",
+		"ip6tables -t nat -X DYATEL-wgd-stale-po6",
+		"ip6tables -t nat -X DYATEL-awd-stale6",
+		"ip6tables -t nat -X DYATEL-awd-stale-po6",
 		"/usr/sbin/ufw --force delete allow 25566/tcp",
 	} {
 		if !slices.Contains(calls, want) {
-			t.Fatalf("missing orphan cleanup call %q in %v", want, calls)
+			t.Fatalf("missing orphan cleanup call %q in:\n%s", want, strings.Join(calls, "\n"))
 		}
 	}
 	for _, forbidden := range []string{
 		"ip link delete wgd-keep",
+		"ip link delete awd-keep",
+		"ip link delete tun0",
+		"systemctl stop dyatel-awg-awd-keep",
 		"iptables -t nat -X DYATEL-wgd-keep",
+		"ip6tables -t nat -X DYATEL-wgd-keep6",
+		"ip6tables -t nat -X DYATEL-awd-keep-po6",
 		"/usr/sbin/ufw --force delete allow 25565/tcp",
 	} {
 		if slices.Contains(calls, forbidden) {
-			t.Fatalf("unexpected cleanup of live resource: %q", forbidden)
+			t.Fatalf("unexpected cleanup of live/unrelated resource: %q", forbidden)
+		}
+	}
+	for _, gone := range []string{"wgd-stale.conf", "awd-stale.conf"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected stale config %s to be deleted", gone)
+		}
+	}
+	for _, kept := range []string{"wgd-keep.conf", "awd-keep.conf", "unrelated.conf"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Fatalf("expected config %s to remain, got err=%v", kept, err)
 		}
 	}
 }

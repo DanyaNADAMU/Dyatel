@@ -351,14 +351,22 @@ func (r *Reconciler) reconcileXray(ctx context.Context, hosts []store.Host) {
 	}
 }
 
-// pruneOrphans removes NAT chains and UFW rules of hosts that no longer
-// exist (or are suspended): iptables -S lists every DYATEL-<ifname> chain,
-// ufw status lists every "Dyatel host=<name>" rule comment.
+// pruneOrphans removes interfaces, rendered configs, NAT chains (v4 + v6), and
+// UFW rules of hosts that no longer exist (or are suspended): iptables/ip6tables
+// -S lists every DYATEL-<ifname> chain, ufw status lists every "Dyatel host=<name>"
+// rule comment.
 func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, seenNames map[string]bool) {
 	// orphan wgd-*/awd-* interfaces (host deleted): bring the list down.
-	// amneziawg registers its own link kind, so both families are scanned.
-	for _, typ := range []struct{ link, prefix string }{
-		{"wireguard", "wgd-"}, {"amneziawg", "awd-"},
+	// amneziawg registers its own link kind when the kernel module is present,
+	// and falls back to userspace amneziawg-go owning a tun (type tun + transient
+	// systemd unit dyatel-awg-<iface>) on kernels without amneziawg-dkms.
+	for _, typ := range []struct {
+		link, prefix string
+		userspace    bool
+	}{
+		{"wireguard", "wgd-", false},
+		{"amneziawg", "awd-", false},
+		{"tun", "awd-", true},
 	} {
 		out, err := r.cmd(ctx, "ip", "-o", "link", "show", "type", typ.link)
 		if err != nil {
@@ -371,24 +379,58 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 			}
 			iface := strings.TrimSuffix(fields[1], ":")
 			if !seen[iface] {
+				if typ.userspace {
+					r.stopAWGUnit(ctx, iface)
+				}
 				_, _ = r.cmd(ctx, "ip", "link", "delete", iface)
 			}
 		}
 	}
-	if out, err := r.cmd(ctx, "iptables", "-t", "nat", "-S"); err == nil {
+	// drop stale rendered daemon configs so degraded-mode ensureFromDisk cannot
+	// resurrect deleted or suspended hosts after a reboot during a DB outage.
+	if r.cfg.WGConfigPath != "" {
+		dir := filepath.Dir(r.cfg.WGConfigPath)
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() || !strings.HasSuffix(name, ".conf") {
+					continue
+				}
+				ifname := strings.TrimSuffix(name, ".conf")
+				if _, ok := transportFromIfname(ifname); !ok || seen[ifname] {
+					continue
+				}
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+		}
+	}
+	for _, fam := range []struct {
+		bin, suffix string
+	}{
+		{"iptables", ""},
+		{"ip6tables", "6"},
+	} {
+		out, err := r.cmd(ctx, fam.bin, "-t", "nat", "-S")
+		if err != nil {
+			continue
+		}
 		for _, line := range strings.Split(out, "\n") {
 			if !strings.HasPrefix(line, "-N DYATEL-") {
 				continue
 			}
 			chain := strings.TrimPrefix(line, "-N ")
-			iface := strings.TrimSuffix(strings.TrimPrefix(chain, "DYATEL-"), "-po")
+			base := strings.TrimPrefix(chain, "DYATEL-")
+			if fam.suffix != "" {
+				base = strings.TrimSuffix(base, fam.suffix)
+			}
+			iface := strings.TrimSuffix(base, "-po")
 			if seen[iface] {
 				continue
 			}
 			for { // drop jumps from both nat hooks, then the chain
 				gone := true
 				for _, h := range []string{"PREROUTING", "POSTROUTING"} {
-					if _, err := r.cmd(ctx, "iptables", "-t", "nat", "-D", h, "-j", chain); err == nil {
+					if _, err := r.cmd(ctx, fam.bin, "-t", "nat", "-D", h, "-j", chain); err == nil {
 						gone = false
 					}
 				}
@@ -396,8 +438,8 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 					break
 				}
 			}
-			_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-F", chain)
-			_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-X", chain)
+			_, _ = r.cmd(ctx, fam.bin, "-t", "nat", "-F", chain)
+			_, _ = r.cmd(ctx, fam.bin, "-t", "nat", "-X", chain)
 		}
 	}
 	if out, err := r.cmd(ctx, r.cfg.UFWBinary, "status"); err == nil {

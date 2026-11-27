@@ -94,10 +94,18 @@ func scanUser(r pgx.Row) (*User, error) {
 }
 
 func (s *Store) CreateUser(ctx context.Context, sub, name string) (*User, error) {
+	// Never overwrite a human display name with a bare authentik_sub fallback
+	// (e.g. trusted X-Dyatel-Sub header requests or OIDC claims missing name).
 	u, err := scanUser(s.Pool.QueryRow(ctx,
 		`INSERT INTO users (authentik_sub, display_name)
 		 VALUES ($1,$2)
-		 ON CONFLICT (authentik_sub) DO UPDATE SET display_name=EXCLUDED.display_name
+		 ON CONFLICT (authentik_sub) DO UPDATE SET display_name = CASE
+		   WHEN EXCLUDED.display_name <> '' AND EXCLUDED.display_name <> users.authentik_sub
+		     THEN EXCLUDED.display_name
+		   WHEN users.display_name = '' OR users.display_name = users.authentik_sub
+		     THEN EXCLUDED.display_name
+		   ELSE users.display_name
+		 END
 		 RETURNING id, authentik_sub, display_name, is_admin`, sub, name))
 	return u, err
 }

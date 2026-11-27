@@ -24,7 +24,9 @@ func (f *fakeUserSync) CreateUser(_ context.Context, sub, name string) (*store.U
 		f.users = map[string]*store.User{}
 	}
 	if u, ok := f.users[sub]; ok {
-		u.DisplayName = name
+		if (name != "" && name != sub) || u.DisplayName == "" || u.DisplayName == sub {
+			u.DisplayName = name
+		}
 		copyU := *u
 		return &copyU, nil
 	}
@@ -120,6 +122,32 @@ func TestIdentityVisibilityAndRole(t *testing.T) {
 				t.Fatalf("RoleOn = %q, want %q", got, tc.role)
 			}
 		})
+	}
+}
+
+func TestTrustedSubKeepsExistingDisplayName(t *testing.T) {
+	users := &fakeUserSync{users: map[string]*store.User{
+		"authentik-sub-123": {
+			ID:           uuid.New(),
+			AuthentikSub: "authentik-sub-123",
+			DisplayName:  "Danya",
+			IsAdmin:      true,
+		},
+	}}
+	a := New(&config.Config{}, nil)
+	a.users = users
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set(SubclaimHeader, "authentik-sub-123")
+	id, err := a.Authenticate(req)
+	if err != nil {
+		t.Fatalf("trusted-sub auth failed: %v", err)
+	}
+	if id.User.DisplayName != "Danya" {
+		t.Fatalf("trusted-sub auth overwrote display name: got %q, want %q", id.User.DisplayName, "Danya")
+	}
+	if !id.IsAdmin {
+		t.Fatal("trusted-sub auth lost the existing admin flag")
 	}
 }
 
