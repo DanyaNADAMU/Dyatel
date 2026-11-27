@@ -6,8 +6,13 @@ import (
 	"net"
 
 	"nadamu/dyatel/internal/config"
-	"nadamu/dyatel/internal/store"
 )
+
+// UsageReader provides current per-node allocations used by Allocator.
+type UsageReader interface {
+	UsedPorts(ctx context.Context, node string) (map[int]bool, error)
+	UsedTunnelIPs(ctx context.Context, node string) (map[string]bool, map[string]bool, error)
+}
 
 // Allocator hands out per-host ports and tunnel addresses. Both live in a
 // gateway node's own space: berg and glacier may hand out the same number,
@@ -15,10 +20,10 @@ import (
 // destination gateway. Uniqueness therefore means "per node", not "fleet-wide".
 type Allocator struct {
 	cfg *config.Config
-	st  *store.Store
+	st  UsageReader
 }
 
-func New(cfg *config.Config, st *store.Store) *Allocator {
+func New(cfg *config.Config, st UsageReader) *Allocator {
 	return &Allocator{cfg: cfg, st: st}
 }
 
@@ -121,19 +126,28 @@ func (a *Allocator) TunnelIPsWith(ctx context.Context, node, transport, preferV4
 	}
 
 	// Auto-pick the missing family, preferring the pinned twin's host part.
+	if ip4 == nil && ip6 != nil {
+		if oct := lastOctet(ip6); oct >= a.cfg.HostIPMin && oct <= a.cfg.HostIPMax {
+			if cand := hostIP(v4cidr, oct); !u4[cand.String()] {
+				ip4 = cand
+			}
+		}
+	}
+	if ip6 == nil && ip4 != nil {
+		if oct := lastOctet(ip4); oct >= a.cfg.HostIPMin && oct <= a.cfg.HostIPMax {
+			if cand := hostIP(v6cidr, oct); !u6[cand.String()] {
+				ip6 = cand
+			}
+		}
+	}
 	for i := a.cfg.HostIPMin; i <= a.cfg.HostIPMax; i++ {
 		if ip4 == nil {
-			cand := hostIP(v4cidr, i)
-			if ip6 != nil && lastOctet(ip6) != i {
-				// try the pinned v6 host part first below
-			}
-			if !u4[cand.String()] {
+			if cand := hostIP(v4cidr, i); !u4[cand.String()] {
 				ip4 = cand
 			}
 		}
 		if ip6 == nil {
-			cand := hostIP(v6cidr, i)
-			if !u6[cand.String()] {
+			if cand := hostIP(v6cidr, i); !u6[cand.String()] {
 				ip6 = cand
 			}
 		}

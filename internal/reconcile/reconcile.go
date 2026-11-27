@@ -18,11 +18,14 @@ import (
 	"nadamu/dyatel/internal/transport/xrayvless"
 )
 
+type cmdRunner func(ctx context.Context, name string, args ...string) (string, error)
+
 type Reconciler struct {
 	cfg    *config.Config
 	st     *store.Store
 	wg     *wireguard.WG
 	xr     *xrayvless.Xray
+	exec   cmdRunner
 	kick   chan struct{}
 	mu     sync.Mutex
 	last   map[string]HostStatus // ifname -> status
@@ -50,7 +53,14 @@ type Endpoint struct {
 
 func New(cfg *config.Config, st *store.Store) *Reconciler {
 	return &Reconciler{cfg: cfg, st: st, wg: wireguard.New(cfg), xr: xrayvless.New(cfg),
-		kick: make(chan struct{}, 1), last: map[string]HostStatus{}}
+		exec: run, kick: make(chan struct{}, 1), last: map[string]HostStatus{}}
+}
+
+func (r *Reconciler) cmd(ctx context.Context, name string, args ...string) (string, error) {
+	if r.exec != nil {
+		return r.exec(ctx, name, args...)
+	}
+	return run(ctx, name, args...)
 }
 
 // Trigger asks for an out-of-band reconcile pass (API mutation → loop picks it up).
@@ -105,7 +115,7 @@ func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport s
 	for _, spec := range []struct{ flag, want, mask string }{
 		{"-4", want4, "/32"}, {"-6", want6, "/128"},
 	} {
-		out, err := run(ctx, "ip", spec.flag, "-o", "addr", "show", "dev", ifname)
+		out, err := r.cmd(ctx, "ip", spec.flag, "-o", "addr", "show", "dev", ifname)
 		if err != nil {
 			continue
 		}
@@ -122,9 +132,9 @@ func (r *Reconciler) ensureGatewayAddrs(ctx context.Context, ifname, transport s
 			if ip == nil || ip.IsLinkLocalUnicast() || ip.String() == spec.want {
 				continue
 			}
-			_, _ = run(ctx, "ip", "addr", "del", addr+spec.mask, "dev", ifname)
+			_, _ = r.cmd(ctx, "ip", "addr", "del", addr+spec.mask, "dev", ifname)
 		}
-		_, _ = run(ctx, "ip", "addr", "replace", spec.want+spec.mask, "dev", ifname)
+		_, _ = r.cmd(ctx, "ip", "addr", "replace", spec.want+spec.mask, "dev", ifname)
 	}
 }
 
@@ -151,7 +161,7 @@ func (r *Reconciler) ensureFromDisk(ctx context.Context) {
 		}
 		// A live interface is left exactly as it is: no syncconf without a
 		// database, because there is no desired state to converge to.
-		if _, err := run(ctx, "ip", "link", "show", ifname); err == nil {
+		if _, err := r.cmd(ctx, "ip", "link", "show", ifname); err == nil {
 			continue
 		}
 		path := filepath.Join(dir, name)
@@ -218,9 +228,9 @@ func (r *Reconciler) pass(ctx context.Context) {
 				xrayHosts = append(xrayHosts, h)
 				seenNames[h.Name] = true
 				key := fmt.Sprintf("%d/tcp", h.ListenPort)
-				_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+				_, _ = r.cmd(ctx, r.cfg.UFWBinary, "allow", key,
 					"comment", "Dyatel host="+h.Name)
-				pruneUFW(ctx, r.cfg.UFWBinary, h.Name, map[string]bool{key: true})
+				r.pruneUFW(ctx, r.cfg.UFWBinary, h.Name, map[string]bool{key: true})
 			}
 			statuses[h.Name] = st
 			continue
@@ -232,9 +242,9 @@ func (r *Reconciler) pass(ctx context.Context) {
 			continue
 		}
 		if cfg == nil { // suspended: teardown iface, forwards pruned as orphan
-			if out, err := run(ctx, tool, "show", ifname); err == nil && out != "" {
-				stopAWGUnit(ctx, ifname)                        // userspace owner first, tun dies with it
-				_, _ = run(ctx, "ip", "link", "delete", ifname) // teardown suspended
+			if out, err := r.cmd(ctx, tool, "show", ifname); err == nil && out != "" {
+				r.stopAWGUnit(ctx, ifname)                        // userspace owner first, tun dies with it
+				_, _ = r.cmd(ctx, "ip", "link", "delete", ifname) // teardown suspended
 			}
 			statuses[ifname] = st
 			continue
@@ -247,11 +257,11 @@ func (r *Reconciler) pass(ctx context.Context) {
 			statuses[ifname] = st
 			continue
 		}
-		if _, err := run(ctx, "ip", "link", "show", ifname); err != nil {
+		if _, err := r.cmd(ctx, "ip", "link", "show", ifname); err != nil {
 			if err := r.bringUp(ctx, ifname, tool, linkType, path, h.Transport); err != nil {
 				st.LastError = fmt.Sprintf("bring-up: %v", err)
 			}
-		} else if _, err := run(ctx, "bash", "-c",
+		} else if _, err := r.cmd(ctx, "bash", "-c",
 			fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip link set %s up",
 				tool, ifname, path, ifname)); err != nil {
 			// syncconf keeps keys/peers without bouncing the tunnel; the
@@ -270,16 +280,16 @@ func (r *Reconciler) pass(ctx context.Context) {
 		// to a dial-in endpoint leave via the default route and die on the
 		// LAN (observed on test: handshake OK both ways, echo replies
 		// routed via enp5s0 -> bridge gateway, consumer sees silence).
-		_, _ = run(ctx, "ip", "route", "replace",
+		_, _ = r.cmd(ctx, "ip", "route", "replace",
 			strings.TrimSuffix(h.TunnelIPv4, "/32")+"/32", "dev", ifname)
-		_, _ = run(ctx, "ip", "-6", "route", "replace",
+		_, _ = r.cmd(ctx, "ip", "-6", "route", "replace",
 			strings.TrimSuffix(h.TunnelIPv6, "/128")+"/128", "dev", ifname)
 		if h.ConsumerTunnelIPv4 != nil {
-			_, _ = run(ctx, "ip", "route", "replace",
+			_, _ = r.cmd(ctx, "ip", "route", "replace",
 				strings.TrimSuffix(*h.ConsumerTunnelIPv4, "/32")+"/32", "dev", ifname)
 		}
 		if h.ConsumerTunnelIPv6 != nil {
-			_, _ = run(ctx, "ip", "-6", "route", "replace",
+			_, _ = r.cmd(ctx, "ip", "-6", "route", "replace",
 				strings.TrimSuffix(*h.ConsumerTunnelIPv6, "/128")+"/128", "dev", ifname)
 		}
 		st.Endpoints["proxer"] = Endpoint{PublicKey: h.WGPublicKey}
@@ -317,7 +327,7 @@ func (r *Reconciler) reconcileXray(ctx context.Context, hosts []store.Host) {
 			r.lastErr(fmt.Errorf("write xray config: %w", err))
 			return
 		}
-		if out, err := run(ctx, "systemctl", "restart", r.cfg.XrayServiceName); err != nil {
+		if out, err := r.cmd(ctx, "systemctl", "restart", r.cfg.XrayServiceName); err != nil {
 			r.lastErr(fmt.Errorf("restart %s: %v %s", r.cfg.XrayServiceName, err, out))
 			return
 		}
@@ -325,17 +335,17 @@ func (r *Reconciler) reconcileXray(ctx context.Context, hosts []store.Host) {
 	if len(hosts) == 0 {
 		// no vless listeners left: a running unit would idle on an empty
 		// config — stop it (disabled stays owned by ansible).
-		if out, err := run(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err == nil &&
+		if out, err := r.cmd(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err == nil &&
 			strings.TrimSpace(out) == "active" {
-			_, _ = run(ctx, "systemctl", "stop", r.cfg.XrayServiceName)
+			_, _ = r.cmd(ctx, "systemctl", "stop", r.cfg.XrayServiceName)
 		}
 		return
 	}
 	// hosts exist: make sure the unit is up even after node reboot or a
 	// manual stop (enabled by ansible, started here for idempotence).
-	if out, err := run(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err != nil ||
+	if out, err := r.cmd(ctx, "systemctl", "is-active", r.cfg.XrayServiceName); err != nil ||
 		strings.TrimSpace(out) != "active" {
-		if out, err := run(ctx, "systemctl", "start", r.cfg.XrayServiceName); err != nil {
+		if out, err := r.cmd(ctx, "systemctl", "start", r.cfg.XrayServiceName); err != nil {
 			r.lastErr(fmt.Errorf("start %s: %v %s", r.cfg.XrayServiceName, err, out))
 		}
 	}
@@ -350,7 +360,7 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 	for _, typ := range []struct{ link, prefix string }{
 		{"wireguard", "wgd-"}, {"amneziawg", "awd-"},
 	} {
-		out, err := run(ctx, "ip", "-o", "link", "show", "type", typ.link)
+		out, err := r.cmd(ctx, "ip", "-o", "link", "show", "type", typ.link)
 		if err != nil {
 			continue
 		}
@@ -361,11 +371,11 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 			}
 			iface := strings.TrimSuffix(fields[1], ":")
 			if !seen[iface] {
-				_, _ = run(ctx, "ip", "link", "delete", iface)
+				_, _ = r.cmd(ctx, "ip", "link", "delete", iface)
 			}
 		}
 	}
-	if out, err := run(ctx, "iptables", "-t", "nat", "-S"); err == nil {
+	if out, err := r.cmd(ctx, "iptables", "-t", "nat", "-S"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			if !strings.HasPrefix(line, "-N DYATEL-") {
 				continue
@@ -378,7 +388,7 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 			for { // drop jumps from both nat hooks, then the chain
 				gone := true
 				for _, h := range []string{"PREROUTING", "POSTROUTING"} {
-					if _, err := run(ctx, "iptables", "-t", "nat", "-D", h, "-j", chain); err == nil {
+					if _, err := r.cmd(ctx, "iptables", "-t", "nat", "-D", h, "-j", chain); err == nil {
 						gone = false
 					}
 				}
@@ -386,11 +396,11 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 					break
 				}
 			}
-			_, _ = run(ctx, "iptables", "-t", "nat", "-F", chain)
-			_, _ = run(ctx, "iptables", "-t", "nat", "-X", chain)
+			_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-F", chain)
+			_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-X", chain)
 		}
 	}
-	if out, err := run(ctx, r.cfg.UFWBinary, "status"); err == nil {
+	if out, err := r.cmd(ctx, r.cfg.UFWBinary, "status"); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			const mark = "# Dyatel host="
 			i := strings.Index(line, mark)
@@ -401,7 +411,7 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 			if len(fields) == 0 || seenNames[strings.TrimSpace(line[i+len(mark):])] {
 				continue
 			}
-			_, _ = run(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
+			_, _ = r.cmd(ctx, r.cfg.UFWBinary, "--force", "delete", "allow", fields[0])
 		}
 	}
 }
@@ -413,14 +423,14 @@ func (r *Reconciler) pruneOrphans(ctx context.Context, seen map[string]bool, see
 // point-to-point and the interface lives only as long as the unit.
 func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, transport string) error {
 	if linkType == "wireguard" {
-		_, err := run(ctx, "bash", "-c",
+		_, err := r.cmd(ctx, "bash", "-c",
 			fmt.Sprintf("ip link add %s type wireguard && %s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
 				ifname, tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 		return err
 	}
 	// amneziawg: kernel module first, userspace fallback (awg-quick pattern)
-	if _, err := run(ctx, "ip", "link", "add", ifname, "type", "amneziawg"); err == nil {
-		_, err := run(ctx, "bash", "-c",
+	if _, err := r.cmd(ctx, "ip", "link", "add", ifname, "type", "amneziawg"); err == nil {
+		_, err := r.cmd(ctx, "bash", "-c",
 			fmt.Sprintf("%s setconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
 				tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 		return err
@@ -433,8 +443,8 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, 
 	// parent exit and KillMode=control-group kills the daemon, losing the
 	// tun. Supervision comes from the reconcile pass instead: if the daemon
 	// dies, its tun disappears and the next pass re-runs this unit.
-	if out, err := run(ctx, "systemctl", "is-active", awgUnitName(ifname)); err != nil || strings.TrimSpace(out) != "active" {
-		if _, err := run(ctx, "systemd-run", "--unit", awgUnitName(ifname),
+	if out, err := r.cmd(ctx, "systemctl", "is-active", awgUnitName(ifname)); err != nil || strings.TrimSpace(out) != "active" {
+		if _, err := r.cmd(ctx, "systemd-run", "--unit", awgUnitName(ifname),
 			"--property", "Type=forking",
 			"/usr/local/bin/amneziawg-go", ifname); err != nil {
 			return fmt.Errorf("userspace fallback: %w", err)
@@ -442,7 +452,7 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, 
 	}
 	// wait for the tun to appear so syncconf/addr on it can't race the daemon
 	for i := 0; i < 50; i++ {
-		if _, err := run(ctx, "ip", "link", "show", ifname); err == nil {
+		if _, err := r.cmd(ctx, "ip", "link", "show", ifname); err == nil {
 			break
 		}
 		select {
@@ -451,15 +461,15 @@ func (r *Reconciler) bringUp(ctx context.Context, ifname, tool, linkType, path, 
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	_, err := run(ctx, "bash", "-c",
+	_, err := r.cmd(ctx, "bash", "-c",
 		fmt.Sprintf("%s syncconf %s <(wg-quick strip %s) && ip addr add %s/32 dev %s && ip addr add %s/128 dev %s && ip link set %s up",
 			tool, ifname, path, r.cfg.GatewayIP(transport), ifname, r.cfg.GatewayIPv6(transport), ifname, ifname))
 	return err
 }
 
 // stopAWGUnit stops the transient userspace unit if it is running this iface.
-func stopAWGUnit(ctx context.Context, ifname string) {
-	_, _ = run(ctx, "systemctl", "stop", awgUnitName(ifname))
+func (r *Reconciler) stopAWGUnit(ctx context.Context, ifname string) {
+	_, _ = r.cmd(ctx, "systemctl", "stop", awgUnitName(ifname))
 }
 
 func awgUnitName(ifname string) string { return "dyatel-awg-" + ifname }
@@ -477,7 +487,7 @@ func (r *Reconciler) Status(ctx context.Context) map[string]any {
 		st := r.last[ifname]
 		// live handshake data from wg/awg show
 		if st.State == "active" {
-			if show, err := run(ctx, wireguard.ToolName(h.Transport), "show", ifname, "dump"); err == nil {
+			if show, err := r.cmd(ctx, wireguard.ToolName(h.Transport), "show", ifname, "dump"); err == nil {
 				parseDump(show, st.Endpoints)
 			}
 		}
@@ -496,8 +506,8 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	// per-iface nat chains, flushed and refilled each pass (idempotent, no-bounce
 	// for established flows — conntrack survives the same-rule rewrite)
 	for _, c := range []string{natChain, poChain} {
-		_, _ = run(ctx, "iptables", "-t", "nat", "-N", c)
-		_, _ = run(ctx, "iptables", "-t", "nat", "-F", c)
+		_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-N", c)
+		_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-F", c)
 	}
 	// src-NAT chain: forwarded packets keep the client's internet source
 	// IP after DNAT, which the host's wg cryptokey routing (AllowedIPs =
@@ -507,7 +517,7 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	// direction still carries the public IP (DNAT ran in PREROUTING), so
 	// --ctorigdst never matches, and --ctstatus DNAT is rejected by
 	// iptables-nft 1.8.9 ("Bad ctstatus").
-	_, _ = run(ctx, "iptables", "-t", "nat", "-A", poChain,
+	_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-A", poChain,
 		"-o", ifname, "-d", tv+"/32", "-j", "MASQUERADE")
 	want := map[string]bool{} // "port/proto" keys this host must expose
 	// Transport listen port is runtime state, so the core — not Ansible —
@@ -515,7 +525,7 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	if h.Transport == "wireguard" || h.Transport == "amneziawg" {
 		key := fmt.Sprintf("%d/udp", h.ListenPort)
 		want[key] = true
-		_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+		_, _ = r.cmd(ctx, r.cfg.UFWBinary, "allow", key,
 			"comment", "Dyatel host="+h.Name)
 	}
 	for _, f := range fwds {
@@ -524,9 +534,9 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 		// `ufw allow` skips existing rules: safe to re-add every pass.
 		// no shell => no quoting; ufw rejects comment args
 		// containing literal quotes ("Invalid syntax")
-		_, _ = run(ctx, r.cfg.UFWBinary, "allow", key,
+		_, _ = r.cmd(ctx, r.cfg.UFWBinary, "allow", key,
 			"comment", "Dyatel host="+h.Name)
-		_, _ = run(ctx, "iptables", "-t", "nat", "-A", natChain,
+		_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-A", natChain,
 			"-p", f.Proto, "--dport", fmt.Sprint(f.PublicPort),
 			"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", tv, f.TargetPort))
 	}
@@ -538,13 +548,13 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 		nat6 := natChain + "6"
 		po6 := poChain + "6"
 		for _, c := range []string{nat6, po6} {
-			_, _ = run(ctx, "ip6tables", "-t", "nat", "-N", c)
-			_, _ = run(ctx, "ip6tables", "-t", "nat", "-F", c)
+			_, _ = r.cmd(ctx, "ip6tables", "-t", "nat", "-N", c)
+			_, _ = r.cmd(ctx, "ip6tables", "-t", "nat", "-F", c)
 		}
-		_, _ = run(ctx, "ip6tables", "-t", "nat", "-A", po6,
+		_, _ = r.cmd(ctx, "ip6tables", "-t", "nat", "-A", po6,
 			"-o", ifname, "-d", tv6+"/128", "-j", "MASQUERADE")
 		for _, f := range fwds {
-			_, _ = run(ctx, "ip6tables", "-t", "nat", "-A", nat6,
+			_, _ = r.cmd(ctx, "ip6tables", "-t", "nat", "-A", nat6,
 				"-p", f.Proto, "--dport", fmt.Sprint(f.PublicPort),
 				"-j", "DNAT", "--to-destination", fmt.Sprintf("[%s]:%d", tv6, f.TargetPort))
 		}
@@ -554,20 +564,20 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 				h = "POSTROUTING"
 			}
 			for {
-				if _, err := run(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
+				if _, err := r.cmd(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
 					break
 				}
-				if _, err := run(ctx, "ip6tables", "-t", "nat", "-D", h, "-j", c); err != nil {
+				if _, err := r.cmd(ctx, "ip6tables", "-t", "nat", "-D", h, "-j", c); err != nil {
 					break
 				}
 			}
-			if _, err := run(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
-				_, _ = run(ctx, "ip6tables", "-t", "nat", "-I", h, "-j", c)
+			if _, err := r.cmd(ctx, "ip6tables", "-t", "nat", "-C", h, "-j", c); err != nil {
+				_, _ = r.cmd(ctx, "ip6tables", "-t", "nat", "-I", h, "-j", c)
 			}
 		}
 	}
 	// drop stale ufw rules this host no longer wants (deleted forwards)
-	pruneUFW(ctx, r.cfg.UFWBinary, h.Name, want)
+	r.pruneUFW(ctx, r.cfg.UFWBinary, h.Name, want)
 	// exactly one jump per chain: `iptables -C` reports via exit status
 	// only (stdout is empty), so err — not output — is the signal.
 	hook := func(c string) string {
@@ -579,15 +589,15 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 	for _, c := range []string{natChain, poChain} {
 		h := hook(c)
 		for {
-			if _, err := run(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
+			if _, err := r.cmd(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
 				break // no (more) jumps
 			}
-			if _, err := run(ctx, "iptables", "-t", "nat", "-D", h, "-j", c); err != nil {
+			if _, err := r.cmd(ctx, "iptables", "-t", "nat", "-D", h, "-j", c); err != nil {
 				break
 			}
 		}
-		if _, err := run(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
-			_, _ = run(ctx, "iptables", "-t", "nat", "-I", h, "-j", c)
+		if _, err := r.cmd(ctx, "iptables", "-t", "nat", "-C", h, "-j", c); err != nil {
+			_, _ = r.cmd(ctx, "iptables", "-t", "nat", "-I", h, "-j", c)
 		}
 	}
 }
@@ -595,8 +605,8 @@ func (r *Reconciler) applyForwards(ctx context.Context, ifname string, h store.H
 // pruneUFW drops rules commented for this host that are no longer wanted
 // (deleted forwards, changed listen port). ufw status lists every rule
 // with its comment, so want is a plain port/proto key set.
-func pruneUFW(ctx context.Context, ufw, name string, want map[string]bool) {
-	out, _ := run(ctx, ufw, "status")
+func (r *Reconciler) pruneUFW(ctx context.Context, ufw, name string, want map[string]bool) {
+	out, _ := r.cmd(ctx, ufw, "status")
 	for _, line := range strings.Split(out, "\n") {
 		if !strings.Contains(line, "# Dyatel host="+name+"") {
 			continue
@@ -605,7 +615,7 @@ func pruneUFW(ctx context.Context, ufw, name string, want map[string]bool) {
 		if len(fields) == 0 || want[fields[0]] {
 			continue
 		}
-		_, _ = run(ctx, ufw, "--force", "delete", "allow", fields[0])
+		_, _ = r.cmd(ctx, ufw, "--force", "delete", "allow", fields[0])
 	}
 }
 
