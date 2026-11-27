@@ -54,7 +54,10 @@ func testServer(t *testing.T) *Server {
 		PortPoolXrayMin:     5200,
 		PortPoolXrayMax:     5299,
 		AuthentikAdminGroup: "Dyatel Admins",
-		FallbackAdminUser:   "breakglass",
+		// The tests inject identities through the trusted header; production
+		// leaves it off so no client can assert one.
+		TrustSubHeader:    true,
+		FallbackAdminUser: "breakglass",
 		// Real argon2id PHC for password "correcthorse" (m=64MiB is slow but
 		// fine for a handful of requests in tests).
 		FallbackAdminHash: "$argon2id$v=19$m=65536,t=2,p=1$0Zh50ymKo7qzu6LzLbJbyw$++EE7ecjdmShgjkPBEIKolDFe0PuLkQ5OqyZrqUmhL0",
