@@ -14,15 +14,19 @@ import Events from "./Events";
 export default function App() {
   const [cred, setCredState] = useState<Credential | null>(getCred());
   const [busy, setBusy] = useState(getCred() === null);
+  const [authErr, setAuthErr] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
+      const hasCallbackParams =
+        location.search.includes("code=") ||
+        location.search.includes("error=") ||
+        location.hash.includes("code=");
       try {
         // Returning from Authentik: complete the code flow, keep the access
         // token in sessionStorage (tab-lifetime only).
-        if (location.search.includes("code=") || location.hash.includes("code=")) {
+        if (hasCallbackParams) {
           const u = await complete();
-          history.replaceState(null, "", location.pathname);
           if (u?.access_token) {
             const c: Credential = { auth: "oidc", token: u.access_token };
             setCred(c);
@@ -36,7 +40,12 @@ export default function App() {
             setCredState(c);
           }
         }
+      } catch (e) {
+        setAuthErr(`Authentik sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
+        if (hasCallbackParams) {
+          history.replaceState(null, "", location.pathname);
+        }
         // A failed callback must still show the login screen, not hang here.
         setBusy(false);
       }
@@ -56,6 +65,7 @@ export default function App() {
   if (!cred)
     return (
       <Login
+        initialError={authErr}
         onOidc={signin}
         onBasic={(c) => {
           setCred(c);
@@ -68,15 +78,17 @@ export default function App() {
 }
 
 function Login({
+  initialError,
   onOidc,
   onBasic,
 }: {
+  initialError: string | null;
   onOidc: () => Promise<void>;
   onBasic: (c: Credential) => void;
 }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(initialError);
 
   const tryOidc = async () => {
     // Surface redirect failures (bad authority/discovery) instead of dying

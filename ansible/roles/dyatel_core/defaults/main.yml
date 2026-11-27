@@ -59,14 +59,14 @@ dyatel_core_node: "test"
 # Reconcile loop period (seconds)
 dyatel_core_reconcile_every: 15
 
-# Auth (RFC §3.2): Authentik OIDC introspection + break-glass admin
+# Auth (RFC §3.2): Authentik OIDC userinfo/introspection + break-glass admin
 dyatel_core_oidc_introspection_url: >-
   {{ dyatel_core_oidc_introspection_url_override
      | default('https://auth.' ~ (dyatel_core_base_domain | default('test.nada.mu'))
-               ~ '/application/o/introspect/') }}
+               ~ '/application/o/userinfo/') }}
 dyatel_core_oidc_client_id: "{{ vault_dyatel_oidc_client_id | default('') }}"
 dyatel_core_oidc_client_secret: "{{ vault_dyatel_oidc_client_secret | default('') }}"
-dyatel_core_oidc_admin_group: "Dyatel Admins"
+dyatel_core_oidc_admin_group: "authentik Admins"
 # Break-glass Basic admin (argon2id PHC hash; leave empty to disable)
 dyatel_core_fallback_admin_user: "{{ vault_dyatel_fallback_admin_user | default('') }}"
 dyatel_core_fallback_admin_hash: "{{ vault_dyatel_fallback_admin_hash | default('') }}"

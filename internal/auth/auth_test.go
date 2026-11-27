@@ -1,14 +1,51 @@
 package auth
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"nadamu/dyatel/internal/config"
 	"nadamu/dyatel/internal/store"
 )
+
+type fakeUserSync struct {
+	users map[string]*store.User
+}
+
+func (f *fakeUserSync) CreateUser(_ context.Context, sub, name string) (*store.User, error) {
+	if f.users == nil {
+		f.users = map[string]*store.User{}
+	}
+	if u, ok := f.users[sub]; ok {
+		u.DisplayName = name
+		copyU := *u
+		return &copyU, nil
+	}
+	u := &store.User{
+		ID:           uuid.New(),
+		AuthentikSub: sub,
+		DisplayName:  name,
+	}
+	f.users[sub] = u
+	copyU := *u
+	return &copyU, nil
+}
+
+func (f *fakeUserSync) SetAdmin(_ context.Context, id uuid.UUID, admin bool) error {
+	for _, u := range f.users {
+		if u.ID == id {
+			u.IsAdmin = admin
+		}
+	}
+	return nil
+}
 
 func TestHashTokenAndNewToken(t *testing.T) {
 	t1 := NewToken()
@@ -83,5 +120,118 @@ func TestIdentityVisibilityAndRole(t *testing.T) {
 				t.Fatalf("RoleOn = %q, want %q", got, tc.role)
 			}
 		})
+	}
+}
+
+func TestOIDCUserInfoAndGroupSync(t *testing.T) {
+	var groups []string
+	var name string
+	var preferUser string
+	var status int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/application/o/userinfo/" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET for userinfo, got %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer good-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if status != 0 && status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sub":                "sub-123",
+			"name":               name,
+			"preferred_username": preferUser,
+			"groups":             groups,
+		})
+	}))
+	defer srv.Close()
+
+	users := &fakeUserSync{}
+	a := New(&config.Config{
+		OIDCIntrospectionURL: srv.URL + "/application/o/userinfo/",
+		AuthentikAdminGroup:  "authentik Admins",
+	}, nil)
+	a.users = users
+
+	// Admin group membership promotes the user.
+	name = "Danya"
+	groups = []string{"Members", "authentik Admins"}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer good-token")
+	id, err := a.Authenticate(req)
+	if err != nil {
+		t.Fatalf("userinfo auth failed: %v", err)
+	}
+	if !id.IsAdmin || id.AuthMethod != "oidc" || id.User.DisplayName != "Danya" {
+		t.Fatalf("unexpected identity: %+v (%+v)", id, id.User)
+	}
+
+	// Removal from admin group demotes on next check and falls back to preferred_username.
+	name = ""
+	preferUser = "danya"
+	groups = []string{"Members"}
+	id, err = a.Authenticate(req)
+	if err != nil {
+		t.Fatalf("userinfo demote check failed: %v", err)
+	}
+	if id.IsAdmin || id.User.DisplayName != "danya" {
+		t.Fatalf("expected demotion + preferred_username fallback, got %+v (%+v)", id, id.User)
+	}
+
+	// Bad bearer token rejected.
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	badReq.Header.Set("Authorization", "Bearer bad-token")
+	if _, err := a.Authenticate(badReq); err == nil {
+		t.Fatal("expected bad token rejection")
+	}
+}
+
+func TestOIDCIntrospectionCompat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST for introspect, got %s", r.Method)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("client_id") != "dyatel" || r.Form.Get("client_secret") != "s3cr3t" {
+			t.Fatalf("unexpected client creds: %v", r.Form)
+		}
+		active := r.Form.Get("token") == "active-tok"
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active": active,
+			"sub":    "sub-456",
+			"name":   "Alice",
+			"groups": []string{"authentik Admins"},
+		})
+	}))
+	defer srv.Close()
+
+	a := New(&config.Config{
+		OIDCIntrospectionURL: srv.URL + "/application/o/introspect/",
+		OIDCClientID:         "dyatel",
+		OIDCClientSecret:     "s3cr3t",
+		AuthentikAdminGroup:  "authentik Admins",
+	}, nil)
+	a.users = &fakeUserSync{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer active-tok")
+	id, err := a.Authenticate(req)
+	if err != nil || !id.IsAdmin || id.User.DisplayName != "Alice" {
+		t.Fatalf("introspect auth got (%+v, %v)", id, err)
+	}
+
+	inactiveReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	inactiveReq.Header.Set("Authorization", "Bearer inactive-tok")
+	if _, err := a.Authenticate(inactiveReq); err == nil {
+		t.Fatal("expected inactive token rejection")
 	}
 }

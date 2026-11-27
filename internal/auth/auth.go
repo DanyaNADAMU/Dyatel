@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -67,16 +69,32 @@ func (i Identity) RoleOn(h store.Host) string {
 	return ""
 }
 
+type oidcUserSync interface {
+	CreateUser(ctx context.Context, sub, name string) (*store.User, error)
+	SetAdmin(ctx context.Context, id uuid.UUID, admin bool) error
+}
+
 // Authenticator validates PAT / fallback / OIDC-sub requests.
 // The public front (nginx) terminates TLS; OIDC bearer validation is
-// delegated to Authentik via the configured introspection endpoint.
+// delegated to Authentik via the configured userinfo or introspection endpoint.
 type Authenticator struct {
-	cfg *config.Config
-	st  *store.Store
+	cfg   *config.Config
+	st    *store.Store
+	users oidcUserSync
+	http  *http.Client
 }
 
 func New(cfg *config.Config, st *store.Store) *Authenticator {
-	return &Authenticator{cfg: cfg, st: st}
+	var users oidcUserSync
+	if st != nil {
+		users = st
+	}
+	return &Authenticator{
+		cfg:   cfg,
+		st:    st,
+		users: users,
+		http:  &http.Client{Timeout: 5 * time.Second},
+	}
 }
 
 var anon = Identity{}
@@ -129,32 +147,72 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	return anon, fmt.Errorf("unauthenticated")
 }
 
-// oidc calls Authentik introspection; falls through to error if Authentik is down
-// (break-glass covers that outage).
+// oidc calls Authentik userinfo or introspection; falls through to error if
+// Authentik is down (break-glass covers that outage).
 func (a *Authenticator) oidc(r *http.Request, token string) (Identity, error) {
 	if a.cfg.OIDCIntrospectionURL == "" {
 		return anon, fmt.Errorf("OIDC not configured")
 	}
-	form := "token=" + token + "&client_id=" + a.cfg.OIDCClientID + "&client_secret=" + a.cfg.OIDCClientSecret
-	resp, err := http.Post(a.cfg.OIDCIntrospectionURL, "application/x-www-form-urlencoded", strings.NewReader(form))
+	client := a.http
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+
+	endpoint := strings.TrimRight(a.cfg.OIDCIntrospectionURL, "/")
+	isUserInfo := strings.HasSuffix(endpoint, "/userinfo")
+
+	var req *http.Request
+	var err error
+	if isUserInfo {
+		req, err = http.NewRequestWithContext(r.Context(), http.MethodGet, a.cfg.OIDCIntrospectionURL, nil)
+		if err != nil {
+			return anon, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		form := url.Values{
+			"token":         {token},
+			"client_id":     {a.cfg.OIDCClientID},
+			"client_secret": {a.cfg.OIDCClientSecret},
+		}
+		req, err = http.NewRequestWithContext(r.Context(), http.MethodPost, a.cfg.OIDCIntrospectionURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			return anon, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return anon, fmt.Errorf("authentik unreachable")
 	}
 	defer resp.Body.Close()
-	var out struct {
-		Active bool     `json:"active"`
-		Sub    string   `json:"sub"`
-		Name   string   `json:"name"`
-		Groups []string `json:"groups"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.Active {
+	if resp.StatusCode != http.StatusOK {
 		return anon, fmt.Errorf("invalid token")
 	}
+
+	var out struct {
+		Active            bool     `json:"active"`
+		Sub               string   `json:"sub"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Groups            []string `json:"groups"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return anon, fmt.Errorf("invalid token")
+	}
+	if (!isUserInfo && !out.Active) || out.Sub == "" {
+		return anon, fmt.Errorf("invalid token")
+	}
+
 	name := out.Name
+	if name == "" {
+		name = out.PreferredUsername
+	}
 	if name == "" {
 		name = out.Sub
 	}
-	u, err := a.st.CreateUser(r.Context(), out.Sub, name)
+	u, err := a.users.CreateUser(r.Context(), out.Sub, name)
 	if err != nil {
 		return anon, err
 	}
@@ -165,7 +223,7 @@ func (a *Authenticator) oidc(r *http.Request, token string) (Identity, error) {
 		}
 	}
 	if u.IsAdmin != admin {
-		_ = a.st.SetAdmin(r.Context(), u.ID, admin)
+		_ = a.users.SetAdmin(r.Context(), u.ID, admin)
 		u.IsAdmin = admin
 	}
 	return Identity{User: u, AuthMethod: "oidc", IsAdmin: admin}, nil
@@ -220,4 +278,4 @@ func verifyPHC(phc, pass string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-var _ = time.Second
+// Remove unused time import check when time.Second is used directly.

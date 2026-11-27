@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounced the daemon.
 - **Pins no longer rejected**: the reserved block was `.1-.15`, which made the
   requested `.6`/`.7` impossible. Only `.1` belongs to the gateway.
+- **Authentik SPA OIDC login**: `internal/auth` now validates bearer tokens
+  against Authentik's `/application/o/userinfo/` endpoint (preserving
+  `/introspect/` compatibility), `dyatel_core` defaults to `userinfo/` and the
+  `authentik Admins` group, and `web/src/App.tsx` surfaces OIDC callback errors
+  instead of swallowing them silently.
 
 ## [v2.3.0] - 2026-11-26
 
