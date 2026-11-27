@@ -57,14 +57,16 @@ func TestParseDump(t *testing.T) {
 		"consumer": {PublicKey: "pk2"},
 	}
 	dump := "gwpriv\tgwpub\t51820\toff\n" +
-		"pk1\tpsk\t1.2.3.4:5555\t1700000000\t120\t340\n" +
-		"pk2\tpsk\t(none)\t0\t0\t0\n"
+		"pk1\tpsk\t1.2.3.4:5555\t10.66.66.2/32\t1700000000\t120\t340\t25\n" +
+		"pk2\tpsk\t(none)\t10.66.66.3/32\t0\t0\t0\toff\n"
 	parseDump(dump, eps)
 
-	if eps["proxer"].Endpoint != "1.2.3.4:5555" || eps["proxer"].TransferRx != 120 || eps["proxer"].TransferTx != 340 {
+	if eps["proxer"].Endpoint != "1.2.3.4:5555" || eps["proxer"].LastHandshake != "1700000000" ||
+		eps["proxer"].TransferRx != 120 || eps["proxer"].TransferTx != 340 {
 		t.Fatalf("unexpected proxer endpoint: %+v", eps["proxer"])
 	}
-	if eps["consumer"].LastHandshake != "0" {
+	if eps["consumer"].Endpoint != "(none)" || eps["consumer"].LastHandshake != "0" ||
+		eps["consumer"].TransferRx != 0 || eps["consumer"].TransferTx != 0 {
 		t.Fatalf("unexpected consumer handshake: %+v", eps["consumer"])
 	}
 }

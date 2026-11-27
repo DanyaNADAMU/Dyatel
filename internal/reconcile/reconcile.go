@@ -662,7 +662,7 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 func parseDump(dump string, eps map[string]Endpoint) {
 	for _, line := range strings.Split(dump, "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 {
+		if len(f) < 7 {
 			continue
 		}
 		for who, ep := range eps {
@@ -670,9 +670,9 @@ func parseDump(dump string, eps map[string]Endpoint) {
 				continue
 			}
 			ep.Endpoint = f[2]
-			ep.LastHandshake = f[3]
-			ep.TransferRx = atoi(f[4])
-			ep.TransferTx = atoi(f[5])
+			ep.LastHandshake = f[4]
+			ep.TransferRx = atoi(f[5])
+			ep.TransferTx = atoi(f[6])
 			eps[who] = ep
 		}
 	}
